@@ -537,6 +537,316 @@ void mjd_stepFD(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_centered,
 }
 
 
+// finite differenced Jacobian of  (next_state, sensors) = mj_step(state, control)
+//   all outputs are optional
+//   output dimensions (transposed w.r.t Control Theory convention):
+//     DyDq: (nv x 2*nv+na)
+//     DyDv: (nv x 2*nv+na)
+//     DyDa: (na x 2*nv+na)
+//     DyDu: (nu x 2*nv+na)
+//     DsDq: (nv x nsensordata)
+//     DsDv: (nv x nsensordata)
+//     DsDa: (na x nsensordata)
+//     DsDu: (nu x nsensordata)
+//   single-letter shortcuts:
+//     inputs: q=qpos, v=qvel, a=act, u=ctrl
+//     outputs: y=next_state (concatenated next qpos, qvel, act), s=sensordata
+void mjd_stepFD_keypoints(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_centered,
+                          mjtNum* DyDq, mjtNum* DyDv, mjtNum* DyDa, mjtNum* DyDu,
+                          mjtNum* DsDq, mjtNum* DsDv, mjtNum* DsDa, mjtNum* DsDu,
+                          int *columns, int num_columns) {
+    int nq = m->nq, nv = m->nv, na = m->na, nu = m->nu, ns = m->nsensordata;
+    int ndx = 2*nv+na;  // row length of Dy Jacobians
+    mj_markStack(d);
+
+    // state to restore after finite differencing
+    unsigned int restore_spec = mjSTATE_FULLPHYSICS | mjSTATE_CTRL;
+    restore_spec |= mjDISABLED(mjDSBL_WARMSTART) ? 0 : mjSTATE_WARMSTART;
+
+    mjtNum *fullstate  = mj_stackAllocNum(d, mj_stateSize(m, restore_spec));
+    mjtNum *state      = mj_stackAllocNum(d, nq+nv+na);  // current state
+    mjtNum *next       = mj_stackAllocNum(d, nq+nv+na);  // next state
+    mjtNum *next_plus  = mj_stackAllocNum(d, nq+nv+na);  // forward-nudged next state
+    mjtNum *next_minus = mj_stackAllocNum(d, nq+nv+na);  // backward-nudged next state
+
+    // sensors
+    int skipsensor = !DsDq && !DsDv && !DsDa && !DsDu;
+    mjtNum *sensor       = skipsensor ? NULL : mj_stackAllocNum(d, ns);  // sensor values
+    mjtNum *sensor_plus  = skipsensor ? NULL : mj_stackAllocNum(d, ns);  // forward-nudged sensors
+    mjtNum *sensor_minus = skipsensor ? NULL : mj_stackAllocNum(d, ns);  // backward-nudged sensors
+
+    // controls
+    mjtNum *ctrl = mj_stackAllocNum(d, nu);
+
+    // save current inputs
+    mj_getState(m, d, fullstate, restore_spec);
+    mju_copy(ctrl, d->ctrl, nu);
+    getState(m, d, state, NULL);
+
+    // step input
+    mj_stepSkip(m, d, mjSTAGE_NONE, skipsensor);
+
+    // save output
+    getState(m, d, next, sensor);
+
+    // restore input
+    mj_setState(m, d, fullstate, restore_spec);
+
+    // finite-difference controls: skip=mjSTAGE_VEL, handle ctrl at range limits
+    if (DyDu || DsDu) {
+        for (int i=0; i < nu; i++) {
+
+            int compute_column = 0;
+            for(int j = 0; j < num_columns; j++){
+                if(columns[j] == i){
+                    compute_column = 1;
+                    break;
+                }
+            }
+
+            // If this degree of freedom is not in the list of columns
+            // to compute, skip it.
+            if(!compute_column){
+                continue;
+            }
+
+            int limited = m->actuator_ctrllimited[i];
+            // nudge forward, if possible given ctrlrange
+            int nudge_fwd = !limited || inRange(ctrl[i], ctrl[i]+eps, m->actuator_ctrlrange+2*i);
+            if (nudge_fwd) {
+                // nudge forward
+                d->ctrl[i] += eps;
+
+                // step, get nudged output
+                mj_stepSkip(m, d, mjSTAGE_VEL, skipsensor);
+                getState(m, d, next_plus, sensor_plus);
+
+                // reset
+                mj_setState(m, d, fullstate, restore_spec);
+            }
+
+            // nudge backward, if possible given ctrlrange
+            int nudge_back = (flg_centered || !nudge_fwd) &&
+                             (!limited || inRange(ctrl[i]-eps, ctrl[i], m->actuator_ctrlrange+2*i));
+            if (nudge_back) {
+                // nudge backward
+                d->ctrl[i] -= eps;
+
+                // step, get nudged output
+                mj_stepSkip(m, d, mjSTAGE_VEL, skipsensor);
+                getState(m, d, next_minus, sensor_minus);
+
+                // reset
+                mj_setState(m, d, fullstate, restore_spec);
+            }
+
+            // difference states
+            if (DyDu) {
+                clampedStateDiff(m, DyDu+i*ndx, next, nudge_fwd ? next_plus : NULL,
+                                 nudge_back ? next_minus : NULL, eps);
+            }
+
+            // difference sensors
+            if (DsDu) {
+                clampedDiff(DsDu+i*ns, sensor, nudge_fwd ? sensor_plus : NULL,
+                            nudge_back ? sensor_minus : NULL, eps, ns);
+            }
+        }
+    }
+
+    // finite-difference activations: skip=mjSTAGE_VEL
+    if (DyDa || DsDa) {
+        for (int i=0; i < na; i++) {
+
+            int compute_column = 0;
+            for(int j = 0; j < num_columns; j++){
+                if(columns[j] == i){
+                    compute_column = 1;
+                    break;
+                }
+            }
+
+            // If this degree of freedom is not in the list of columns
+            // to compute, skip it.
+            if(!compute_column){
+                continue;
+            }
+
+            // nudge forward
+            d->act[i] += eps;
+
+            // step, get nudged output
+            mj_stepSkip(m, d, mjSTAGE_VEL, skipsensor);
+            getState(m, d, next_plus, sensor_plus);
+
+            // reset
+            mj_setState(m, d, fullstate, restore_spec);
+
+            // nudge backward
+            if (flg_centered) {
+                // nudge backward
+                d->act[i] -= eps;
+
+                // step, get nudged output
+                mj_stepSkip(m, d, mjSTAGE_VEL, skipsensor);
+                getState(m, d, next_minus, sensor_minus);
+
+                // reset
+                mj_setState(m, d, fullstate, restore_spec);
+            }
+
+            // difference states
+            if (DyDa) {
+                if (!flg_centered) {
+                    stateDiff(m, DyDa+i*ndx, next, next_plus, eps);
+                } else {
+                    stateDiff(m, DyDa+i*ndx, next_minus, next_plus, 2*eps);
+                }
+            }
+
+            // difference sensors
+            if (DsDa) {
+                if (!flg_centered) {
+                    diff(DsDa+i*ns, sensor, sensor_plus, eps, ns);
+                } else {
+                    diff(DsDa+i*ns, sensor_minus, sensor_plus, 2*eps, ns);
+                }
+            }
+        }
+    }
+
+
+    // finite-difference velocities: skip=mjSTAGE_POS
+    if (DyDv || DsDv) {
+        for (int i=0; i < nv; i++) {
+
+            int compute_column = 0;
+            for(int j = 0; j < num_columns; j++){
+                if(columns[j] == i){
+                    compute_column = 1;
+                    break;
+                }
+            }
+
+            // If this degree of freedom is not in the list of columns
+            // to compute, skip it.
+            if(!compute_column){
+                continue;
+            }
+
+            // nudge forward
+            d->qvel[i] += eps;
+
+            // step, get nudged output
+            mj_stepSkip(m, d, mjSTAGE_POS, skipsensor);
+            getState(m, d, next_plus, sensor_plus);
+
+            // reset
+            mj_setState(m, d, fullstate, restore_spec);
+
+            // nudge backward
+            if (flg_centered) {
+                // nudge
+                d->qvel[i] -= eps;
+
+                // step, get nudged output
+                mj_stepSkip(m, d, mjSTAGE_POS, skipsensor);
+                getState(m, d, next_minus, sensor_minus);
+
+                // reset
+                mj_setState(m, d, fullstate, restore_spec);
+            }
+
+            // difference states
+            if (DyDv) {
+                if (!flg_centered) {
+                    stateDiff(m, DyDv+i*ndx, next, next_plus, eps);
+                } else {
+                    stateDiff(m, DyDv+i*ndx, next_minus, next_plus, 2*eps);
+                }
+            }
+
+            // difference sensors
+            if (DsDv) {
+                if (!flg_centered) {
+                    diff(DsDv+i*ns, sensor, sensor_plus, eps, ns);
+                } else {
+                    diff(DsDv+i*ns, sensor_minus, sensor_plus, 2*eps, ns);
+                }
+            }
+        }
+    }
+
+    // finite-difference positions: skip=mjSTAGE_NONE
+    if (DyDq || DsDq) {
+        mjtNum *dpos  = mj_stackAllocNum(d, nv);  // allocate position perturbation
+        for (int i=0; i < nv; i++) {
+
+            int compute_column = 0;
+            for(int j = 0; j < num_columns; j++){
+                if(columns[j] == i){
+                    compute_column = 1;
+                    break;
+                }
+            }
+
+            // If this degree of freedom is not in the list of columns
+            // to compute, skip it.
+            if(!compute_column){
+                continue;
+            }
+
+            // nudge forward
+            mju_zero(dpos, nv);
+            dpos[i] = 1;
+            mj_integratePos(m, d->qpos, dpos, eps);
+
+            // step, get nudged output
+            mj_stepSkip(m, d, mjSTAGE_NONE, skipsensor);
+            getState(m, d, next_plus, sensor_plus);
+
+            // reset
+            mj_setState(m, d, fullstate, restore_spec);
+
+            // nudge backward
+            if (flg_centered) {
+                // nudge backward
+                mju_zero(dpos, nv);
+                dpos[i] = 1;
+                mj_integratePos(m, d->qpos, dpos, -eps);
+
+                // step, get nudged output
+                mj_stepSkip(m, d, mjSTAGE_NONE, skipsensor);
+                getState(m, d, next_minus, sensor_minus);
+
+                // reset
+                mj_setState(m, d, fullstate, restore_spec);
+            }
+
+            // difference states
+            if (DyDq) {
+                if (!flg_centered) {
+                    stateDiff(m, DyDq+i*ndx, next, next_plus, eps);
+                } else {
+                    stateDiff(m, DyDq+i*ndx, next_minus, next_plus, 2*eps);
+                }
+            }
+
+            // difference sensors
+            if (DsDq) {
+                if (!flg_centered) {
+                    diff(DsDq+i*ns, sensor, sensor_plus, eps, ns);
+                } else {
+                    diff(DsDq+i*ns, sensor_minus, sensor_plus, 2*eps, ns);
+                }
+            }
+        }
+    }
+
+    mj_freeStack(d);
+}
+
+
 
 // finite differenced transition matrices (control theory notation)
 //   d(x_next) = A*dx + B*du
@@ -587,6 +897,60 @@ void mjd_transitionFD(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_cente
   if (D) mju_transpose(D, DT, nu, ns);
 
   mj_freeStack(d);
+}
+
+
+// finite differenced transition matrices (control theory notation)
+//   d(x_next) = A*dx + B*du
+//   d(sensor) = C*dx + D*du
+//   required output matrix dimensions:
+//      A: (2*nv+na x 2*nv+na)
+//      B: (2*nv+na x nu)
+//      C: (nsensordata x 2*nv+na)
+//      D: (nsensordata x nu)
+//   Overloaded function to also accept a dynamic list of columns. only the columns relating
+//   to the specified indices will be computed.
+void mjd_transitionFD_columns(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_centered,
+                              mjtNum* A, mjtNum* B, mjtNum* C, mjtNum* D, int *columns, int num_columns) {
+    int nv = m->nv, na = m->na, nu = m->nu, ns = m->nsensordata;
+    int ndx = 2*nv+na;  // row length of state Jacobians
+
+    // stepFD() offset pointers, initialised to NULL
+    mjtNum *DyDq, *DyDv, *DyDa, *DsDq, *DsDv, *DsDa;
+    DyDq = DyDv = DyDa = DsDq = DsDv = DsDa = NULL;
+
+    mj_markStack(d);
+
+    // allocate transposed matrices
+    mjtNum *AT = A ? mj_stackAllocNum(d, ndx*ndx) : NULL;  // state-transition matrix   (transposed)
+    mjtNum *BT = B ? mj_stackAllocNum(d, nu*ndx) : NULL;   // control-transition matrix (transposed)
+    mjtNum *CT = C ? mj_stackAllocNum(d, ndx*ns) : NULL;   // state-observation matrix   (transposed)
+    mjtNum *DT = D ? mj_stackAllocNum(d, nu*ns) : NULL;    // control-observation matrix (transposed)
+
+    // set offset pointers
+    if (A) {
+        DyDq = AT;
+        DyDv = AT+ndx*nv;
+        DyDa = AT+ndx*2*nv;
+    }
+
+    if (C) {
+        DsDq = CT;
+        DsDv = CT + ns*nv;
+        DsDa = CT + ns*2*nv;
+    }
+
+    // get Jacobians
+    mjd_stepFD_keypoints(m, d, eps, flg_centered, DyDq, DyDv, DyDa, BT, DsDq, DsDv, DsDa, DT, columns, num_columns);
+
+
+    // transpose
+    if (A) mju_transpose(A, AT, ndx, ndx);
+    if (B) mju_transpose(B, BT, nu, ndx);
+    if (C) mju_transpose(C, CT, ndx, ns);
+    if (D) mju_transpose(D, DT, nu, ns);
+
+    mj_freeStack(d);
 }
 
 // finite differenced Jacobians of (force, sensors) = mj_inverse(state, acceleration)

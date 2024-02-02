@@ -1250,6 +1250,19 @@ MJAPI mjtNum mju_sigmoid(mjtNum x);
 MJAPI void mjd_transitionFD(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_centered,
                             mjtNum* A, mjtNum* B, mjtNum* C, mjtNum* D);
 
+// Finite differenced transition matrices (control theory notation)
+//   d(x_next) = A*dx + B*du
+//   d(sensor) = C*dx + D*du
+//   required output matrix dimensions:
+//      A: (2*nv+na x 2*nv+na)
+//      B: (2*nv+na x nu)
+//      D: (nsensordata x 2*nv+na)
+//      C: (nsensordata x nu)
+//   For a specific subset of columns in these matrices.
+MJAPI void mjd_transitionFD_columns(const mjModel* m, mjData* d, mjtNum eps, mjtByte centered,
+                                    mjtNum* A, mjtNum* B, mjtNum* C, mjtNum* D,
+                                    int *columns, int num_columns);
+
 // Finite differenced Jacobians of (force, sensors) = mj_inverse(state, acceleration)
 //   All outputs are optional. Output dimensions (transposed w.r.t Control Theory convention):
 //     DfDq: (nv x nv)
