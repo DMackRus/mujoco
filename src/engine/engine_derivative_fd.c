@@ -606,7 +606,7 @@ void mjd_stepFD_keypoints(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_c
 
             // If this degree of freedom is not in the list of columns
             // to compute, skip it.
-            if(!compute_column){
+            if(compute_column == 0){
                 continue;
             }
 
@@ -668,7 +668,7 @@ void mjd_stepFD_keypoints(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_c
 
             // If this degree of freedom is not in the list of columns
             // to compute, skip it.
-            if(!compute_column){
+            if(compute_column == 0){
                 continue;
             }
 
@@ -730,7 +730,7 @@ void mjd_stepFD_keypoints(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_c
 
             // If this degree of freedom is not in the list of columns
             // to compute, skip it.
-            if(!compute_column){
+            if(compute_column == 0){
                 continue;
             }
 
@@ -792,7 +792,7 @@ void mjd_stepFD_keypoints(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_c
 
             // If this degree of freedom is not in the list of columns
             // to compute, skip it.
-            if(!compute_column){
+            if(compute_column == 0){
                 continue;
             }
 
