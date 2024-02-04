@@ -937,7 +937,7 @@ void mjd_transitionFD_columns(const mjModel* m, mjData* d, mjtNum eps, mjtByte f
     }
 
     // get Jacobians
-    mjd_stepFD_keypoints(m, d, eps, flg_centered, DyDq, DyDv, DyDa, BT, DsDq, DsDv, DsDa, DT, columns, num_columns);
+    mjd_stepFD_keypoints(m, d, eps, flg_centered, DyDq, DyDv, DyDa, B, DsDq, DsDv, DsDa, D, columns, num_columns);
 
     mj_freeStack(d);
 }
