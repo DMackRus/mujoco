@@ -914,7 +914,7 @@ void mjd_transitionFD(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_cente
 //   be interpolated column-wise.
 void mjd_transitionFD_columns(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_centered,
                               mjtNum* A, mjtNum* B, mjtNum* C, mjtNum* D, int *columns, int num_columns) {
-    int nv = m->nv, na = m->na, nu = m->nu, ns = m->nsensordata;
+    int nv = m->nv, na = m->na, ns = m->nsensordata;
     int ndx = 2*nv+na;  // row length of state Jacobians
 
     // stepFD() offset pointers, initialised to NULL
