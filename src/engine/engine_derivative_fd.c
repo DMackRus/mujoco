@@ -606,7 +606,7 @@ void mjd_stepFD_keypoints(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_c
 
             // If this degree of freedom is not in the list of columns
             // to compute, skip it.
-            if(compute_column == 0){
+            if(!compute_column){
                 continue;
             }
 
@@ -668,7 +668,7 @@ void mjd_stepFD_keypoints(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_c
 
             // If this degree of freedom is not in the list of columns
             // to compute, skip it.
-            if(compute_column == 0){
+            if(!compute_column){
                 continue;
             }
 
@@ -730,7 +730,7 @@ void mjd_stepFD_keypoints(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_c
 
             // If this degree of freedom is not in the list of columns
             // to compute, skip it.
-            if(compute_column == 0){
+            if(!compute_column){
                 continue;
             }
 
@@ -792,8 +792,7 @@ void mjd_stepFD_keypoints(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_c
 
             // If this degree of freedom is not in the list of columns
             // to compute, skip it.
-            if(compute_column == 0){
-                printf("Skipping column %d\n", i);
+            if(!compute_column{
                 continue;
             }
 
@@ -909,8 +908,10 @@ void mjd_transitionFD(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_cente
 //      B: (2*nv+na x nu)
 //      C: (nsensordata x 2*nv+na)
 //      D: (nsensordata x nu)
-//   Overloaded function to also accept a dynamic list of columns. only the columns relating
-//   to the specified indices will be computed.
+//   This function is similar to mjd_transitionFD, but it only computes the
+//   derivatives for the columns specified.
+//   Important! - this function doesnt transpose A, B, C and D matrices so they can
+//   be interpolated column-wise.
 void mjd_transitionFD_columns(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_centered,
                               mjtNum* A, mjtNum* B, mjtNum* C, mjtNum* D, int *columns, int num_columns) {
     int nv = m->nv, na = m->na, nu = m->nu, ns = m->nsensordata;
@@ -922,34 +923,21 @@ void mjd_transitionFD_columns(const mjModel* m, mjData* d, mjtNum eps, mjtByte f
 
     mj_markStack(d);
 
-    // allocate transposed matrices
-    mjtNum *AT = A ? mj_stackAllocNum(d, ndx*ndx) : NULL;  // state-transition matrix   (transposed)
-    mjtNum *BT = B ? mj_stackAllocNum(d, nu*ndx) : NULL;   // control-transition matrix (transposed)
-    mjtNum *CT = C ? mj_stackAllocNum(d, ndx*ns) : NULL;   // state-observation matrix   (transposed)
-    mjtNum *DT = D ? mj_stackAllocNum(d, nu*ns) : NULL;    // control-observation matrix (transposed)
-
     // set offset pointers
     if (A) {
-        DyDq = AT;
-        DyDv = AT+ndx*nv;
-        DyDa = AT+ndx*2*nv;
+        DyDq = A;
+        DyDv = A+ndx*nv;
+        DyDa = A+ndx*2*nv;
     }
 
     if (C) {
-        DsDq = CT;
-        DsDv = CT + ns*nv;
-        DsDa = CT + ns*2*nv;
+        DsDq = C;
+        DsDv = C + ns*nv;
+        DsDa = C + ns*2*nv;
     }
 
     // get Jacobians
     mjd_stepFD_keypoints(m, d, eps, flg_centered, DyDq, DyDv, DyDa, BT, DsDq, DsDv, DsDa, DT, columns, num_columns);
-
-
-    // transpose
-    if (A) mju_transpose(A, AT, ndx, ndx);
-    if (B) mju_transpose(B, BT, nu, ndx);
-    if (C) mju_transpose(C, CT, ndx, ns);
-    if (D) mju_transpose(D, DT, nu, ns);
 
     mj_freeStack(d);
 }
