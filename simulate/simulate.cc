@@ -1262,7 +1262,7 @@ int ComputeFontScale(const mj::PlatformUIAdapter& platform_ui) {
     fs = 150;
   }
   fs = mju_round(fs * 0.02) * 50;
-  fs = mjMIN(300, mjMAX(100, fs));
+  fs = mjMIN(250, mjMAX(100, fs));
 
   return fs;
 }
@@ -1969,14 +1969,7 @@ void Simulate::Sync() {
   }
 
   if (pending_.load_key) {
-    int i = this->key;
-    d_->time = m_->key_time[i];
-    mju_copy(d_->qpos, m_->key_qpos + i*m_->nq, m_->nq);
-    mju_copy(d_->qvel, m_->key_qvel + i*m_->nv, m_->nv);
-    mju_copy(d_->act, m_->key_act + i*m_->na, m_->na);
-    mju_copy(d_->mocap_pos, m_->key_mpos + i*3*m_->nmocap, 3*m_->nmocap);
-    mju_copy(d_->mocap_quat, m_->key_mquat + i*4*m_->nmocap, 4*m_->nmocap);
-    mju_copy(d_->ctrl, m_->key_ctrl + i*m_->nu, m_->nu);
+    mj_resetDataKeyframe(m_, d_, this->key);
     mj_forward(m_, d_);
     update_profiler = true;
     update_sensor = true;
@@ -2089,6 +2082,18 @@ void Simulate::Sync() {
                     sizeof(mjvGeom) * ngeom);
         scnstate_.scratch.ngeom += ngeom;
       }
+    }
+
+    // pick up rendering flags changed via user_scn
+    if (user_scn) {
+      for (int i = 0; i < mjNRNDFLAG; ++i) {
+        if (user_scn->flags[i] != user_scn_flags_prev_[i]) {
+          scn.flags[i] = user_scn->flags[i];
+          pending_.ui_update_rendering = true;
+        }
+      }
+      Copy(user_scn->flags, scn.flags);
+      Copy(user_scn_flags_prev_, user_scn->flags);
     }
 
     mjopt_prev_ = scnstate_.model.opt;
@@ -2268,6 +2273,11 @@ void Simulate::LoadOnRenderThread() {
   if (!this->platform_ui->IsGPUAccelerated()) {
     this->scn.flags[mjRND_SHADOW] = 0;
     this->scn.flags[mjRND_REFLECTION] = 0;
+  }
+
+  if (this->user_scn) {
+    Copy(this->user_scn->flags, this->scn.flags);
+    Copy(this->user_scn_flags_prev_, this->scn.flags);
   }
 
   // clear perturbation state

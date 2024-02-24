@@ -671,14 +671,18 @@ is effectively a miscellaneous subsection.
 :at:`azimuth`: :at-val:`real, "90"`
    This attribute specifies the initial azimuth of the free camera around the vertical z-axis, in degrees. A value of 0
    corresponds to looking in the positive x direction, while the default value of 90 corresponds to looking in the
-   positive y direction.
+   positive y direction. The look-at point itself is specified by the :ref:`statistic/center<statistic-center>`
+   attribute, while the distance from the look-at point is controlled by the :ref:`statistic/extent<statistic-extent>`
+   attribute.
 
 .. _visual-global-elevation:
 
 :at:`elevation`: :at-val:`real, "-45"`
    This attribute specifies the initial elevation of the free camera with respect to the lookat point. Note that since
    this is a rotation around a vector parallel to the camera's X-axis (right in pixel space), *negative* numbers
-   correspond to moving the camera *up* from the horizontal plane, and vice-versa.
+   correspond to moving the camera *up* from the horizontal plane, and vice-versa. The look-at point itself is specified
+   by the :ref:`statistic/center<statistic-center>` attribute, while the distance from the look-at point is controlled
+   by the :ref:`statistic/extent<statistic-extent>` attribute.
 
 .. _visual-global-linewidth:
 
@@ -1214,40 +1218,41 @@ construct simple shapes directly in the XML. For example, a pyramid can be creat
 .. code-block:: xml
 
    <asset>
-       <mesh name="tetrahedron" vertex="0 0 0  1 0 0  0 1 0  0 0 1"/>
+     <mesh name="tetrahedron" vertex="0 0 0  1 0 0  0 1 0  0 0 1"/>
    </asset>
 
-Positioning and orienting is complicated by the fact that vertex data are often designed relative to coordinate frames
-whose origin is not inside the mesh. In contrast, MuJoCo expects the origin of a geom's local frame to coincide with the
-geometric center of the shape. We resolve this discrepancy by pre-processing the mesh in the compiler, so that it is
-centered around (0,0,0) and its principal axes of inertia are the coordinate axes. We also save the translation and
-rotation offsets needed to achieve such alignment in :ref:`mjModel.mesh_pos<mjModel>` and
-:ref:`mjModel.mesh_quat<mjModel>`. These offsets are then applied to the referencing geom's position and orientation; see
-also :at:`mesh` attribute of :ref:`geom <body-geom>` below. Fortunately most meshes used in robot models are designed in
-a coordinate frame centered at the joint. This makes the corresponding MJCF model intuitive: we set the body frame at the
-joint, so that the joint position is (0,0,0) in the body frame, and simply reference the mesh. Below is an MJCF model
-fragment of a forearm, containing all the information needed to put the mesh where one would expect it to be. The body
-position is specified relative to the parent body, namely the upper arm (not shown). It is offset by 35 cm which is the
-typical length of the human upper arm. If the mesh vertex data were not designed in the above convention, we would have
-to use the geom position and orientation (or the new refpos, refquat mechanism) to compensate, but in practice this is
+Positioning and orienting is complicated by the fact that vertex data in the source asset are often relative to
+coordinate frames whose origin is not inside the mesh. In contrast, MuJoCo expects the origin of a geom's local frame to
+coincide with the geometric center of the shape. We resolve this discrepancy by pre-processing the mesh in the compiler,
+so that it is centered around (0,0,0) and its principal axes of inertia are the coordinate axes. We save the translation
+and rotation offsets applied to the source asset in :ref:`mjModel.mesh_pos<mjModel>` and
+:ref:`mjModel.mesh_quat<mjModel>`; these are required if one reads vertex data from the source and needs to re-apply the
+transform. These offsets are then composed with the referencing geom's position and orientation; see also the :at:`mesh`
+attribute of :ref:`geom <body-geom>` below. Fortunately most meshes used in robot models are designed in a coordinate
+frame centered at the joint. This makes the corresponding MJCF model intuitive: we set the body frame at the joint, so
+that the joint position is (0,0,0) in the body frame, and simply reference the mesh. Below is an MJCF model fragment of
+a forearm, containing all the information needed to put the mesh where one would expect it to be. The body position is
+specified relative to the parent body, namely the upper arm (not shown). It is offset by 35 cm which is the typical
+length of the human upper arm. If the mesh vertex data were not designed in the above convention, we would have to use
+the geom position and orientation (or the :at:`refpos`, :at:`refquat`` mechanism) to compensate, but in practice this is
 rarely needed.
 
 .. code-block:: xml
 
    <asset>
-       <mesh file="forearm.stl"/>
+     <mesh file="forearm.stl"/>
    </asset>
 
    <body pos="0 0 0.35"/>
-       <joint type="hinge" axis="1 0 0"/>
-       <geom type="mesh" mesh="forearm"/>
+     <joint type="hinge" axis="1 0 0"/>
+     <geom type="mesh" mesh="forearm"/>
    </body>
 
 The inertial computation mentioned above is part of an algorithm used not only to center and align the mesh, but also to
 infer the mass and inertia of the body to which it is attached. This is done by computing the centroid of the triangle
 faces, connecting each face with the centroid to form a triangular pyramid, computing the mass and signed inertia of all
-pyramids (considered solid or hollow if :at:`shellinertia` is true) and accumulating them. The sign ensures that
-pyramids on the outside of the surfaces are subtracted, as it can occur with concave geometries. This algorithm can be
+pyramids (considered solid, or hollow if :at:`shellinertia` is true) and accumulating them. The sign ensures that
+pyramids on the outside of the surfaces are subtracted, as can occur with concave geometries. This algorithm can be
 found in section 1.3.8 of Computational Geometry in C (Second Edition) by Joseph O'Rourke.
 
 The full list of processing steps applied by the compiler to each mesh is as follows:
@@ -1973,12 +1978,19 @@ adjust it properly through the XML.
 :at:`sdf_initpoints`: :at-val:`int, "40"`
    Number of starting points used for finding contacts with Signed Distance Field collisions.
 
+.. youtube:: H9qG9Zf2W44
+   :align: right
+   :width: 240px
+
 .. _option-actuatorgroupdisable:
 
-:at:`actuatorgroupdisable`: :at-val:`int(30), ""`
+:at:`actuatorgroupdisable`: :at-val:`int(31), optional`
    List of actuator groups to disable. Actuators whose :ref:`group<actuator-general-group>` is in this list will produce
    no force. If they are stateful, their activation states will not be integrated. Internally this list is
-   implemented as an integer bitfield, so values must be in the range ``0 <= group <= 30``.
+   implemented as an integer bitfield, so values must be in the range ``0 <= group <= 30``. If not set, all actuator
+   groups are enabled. See `example model
+   <https://github.com/google-deepmind/mujoco/blob/main/test/engine/testdata/actuation/actuator_group_disable.xml>`__
+   and associated screen-capture on the right.
 
 .. _option-flag:
 
@@ -4590,7 +4602,7 @@ of the other body, without any joint elements in the child body.
 
 :at:`body2`: :at-val:`string, optional`
    Name of the second body. If this attribute is omitted, the second body is the world body. Welding a body to the world
-   and changing the corresponding component of mjModel.eq_active at runtime can be used to fix the body temporarily.
+   and changing the corresponding component of mjData.eq_active at runtime can be used to fix the body temporarily.
 
 .. _equality-weld-relpose:
 
@@ -5418,6 +5430,20 @@ This element has one custom attribute in addition to the common attributes:
    Damping applied by the actuator.
    When using this attribute, it is recommended to use the implicitfast or implicit :ref:`integrators<geIntegration>`.
 
+.. _actuator-position-inheritrange:
+
+:at:`inheritrange`: :at-val:`real, "0"`
+   Automatically set the actuator's :at:`ctrlrange` to match the transmission target's :at:`range`. The default value
+   means "disabled". A positive value :at-val:`X` sets the :at:`ctrlrange` around the midpoint of the target range,
+   scaled by :at-val:`X`. For example if the target joint has :at:`range` of :at-val:`[0, 1]`, then a value of
+   :at-val:`1.0` will set :at:`ctrlrange` to :at-val:`[0, 1]`; values of :at-val:`0.8` and :at-val:`1.2` will set the
+   :at:`ctrlrange` to :at-val:`[0.1, 0.9]` and :at-val:`[-0.1, 1.1]`, respectively. Values smaller than 1 are useful for
+   not hitting the limits; values larger than 1 are useful for maintaining control authority at the limits (being able
+   to push on them). This attribute is exclusive with :at:`ctrlrange` and available only for joint and tendon
+   transmissions which have :at:`range` defined. Note that while :at:`inheritrange` is available both as a
+   :ref:`position<actuator-position>` attribute and in the :ref:`default class<default-position-inheritrange>`,
+   saved XMLs always convert it to explicit :at:`ctrlrange` at the actuator.
+
 .. _actuator-velocity:
 
 :el-prefix:`actuator/` |-| **velocity** (*)
@@ -5566,10 +5592,16 @@ This element has one custom attribute in addition to the common attributes:
    Damping applied by the actuator.
    When using this attribute, it is recommended to use the implicitfast or implicit :ref:`integrators<geIntegration>`.
 
+.. _actuator-intvelocity-inheritrange:
+
+:at:`inheritrange`: :at-val:`real, "0"`
+   Identical to :ref:`position/inheritrange<actuator-position-inheritrange>`, but sets :at:`actrange` (which has the same
+   length semantics as the transmission target) rather than :at:`ctrlrange` (which has velocity semantics).
+
 .. _actuator-damper:
 
 :el-prefix:`actuator/` |-| **damper** (*)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This element is an active damper which produces a force proportional to both velocity and control: ``F = - kv * velocity
 * control``, where ``kv`` must be nonnegative. :at:`ctrlrange` is required and must also be nonnegative.
@@ -7676,8 +7708,8 @@ if omitted.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 | This element sets the attributes of the dummy :ref:`general <actuator-general>` element of the defaults class.
-| All general attributes are available here except: name, class, joint, jointinparent, site, tendon, slidersite,
-  cranksite.
+| All general attributes are available here except: name, class, joint, jointinparent, site, refsite, tendon,
+  slidersite, cranksite.
 
 
 .. _default-motor:
@@ -7704,8 +7736,8 @@ if omitted.
 This and the next three elements set the attributes of the :ref:`general <actuator-general>` element using
 :ref:`Actuator shortcuts <CActShortcuts>`. It does not make sense to use more than one such shortcut in the same defaults
 class, because they set the same underlying attributes, replacing any previous settings. All
-:ref:`motor <actuator-motor>` attributes are available here except: name, class, joint, jointinparent, site, tendon,
-slidersite, cranksite.
+:ref:`motor <actuator-motor>` attributes are available here except: name, class, joint, jointinparent, site, refsite,
+tendon, slidersite, cranksite.
 
 
 .. _default-position:
@@ -7715,6 +7747,8 @@ slidersite, cranksite.
 .. _default-position-forcelimited:
 
 .. _default-position-ctrlrange:
+
+.. _default-position-inheritrange:
 
 .. _default-position-forcerange:
 
@@ -7734,7 +7768,7 @@ slidersite, cranksite.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 All :ref:`position <actuator-position>` attributes are available here except: name, class, joint, jointinparent, site,
-tendon, slidersite, cranksite.
+refsite, tendon, slidersite, cranksite.
 
 
 .. _default-velocity:
@@ -7761,7 +7795,7 @@ tendon, slidersite, cranksite.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 All :ref:`velocity <actuator-velocity>` attributes are available here except: name, class, joint, jointinparent, site,
-tendon, slidersite, cranksite.
+refsite, tendon, slidersite, cranksite.
 
 
 .. _default-intvelocity:
@@ -7775,6 +7809,8 @@ tendon, slidersite, cranksite.
 .. _default-intvelocity-forcerange:
 
 .. _default-intvelocity-actrange:
+
+.. _default-intvelocity-inheritrange:
 
 .. _default-intvelocity-gear:
 
@@ -7792,7 +7828,7 @@ tendon, slidersite, cranksite.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 All :ref:`intvelocity <actuator-intvelocity>` attributes are available here except: name, class, joint, jointinparent,
-site, tendon, slidersite, cranksite.
+site, refsite, tendon, slidersite, cranksite.
 
 
 .. _default-damper:
@@ -7817,7 +7853,7 @@ site, tendon, slidersite, cranksite.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 All :ref:`damper <actuator-damper>` attributes are available here except: name, class, joint, jointinparent, site,
-tendon, slidersite, cranksite.
+refsite, tendon, slidersite, cranksite.
 
 
 .. _default-cylinder:
@@ -7850,7 +7886,7 @@ tendon, slidersite, cranksite.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 All :ref:`cylinder <actuator-cylinder>` attributes are available here except: name, class, joint, jointinparent, site,
-tendon, slidersite, cranksite.
+refsite, tendon, slidersite, cranksite.
 
 
 .. _default-muscle:
@@ -7893,7 +7929,7 @@ tendon, slidersite, cranksite.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 All :ref:`muscle <actuator-muscle>` attributes are available here except: name, class, joint, jointinparent, site,
-tendon, slidersite, cranksite.
+refsite, tendon, slidersite, cranksite.
 
 
 .. _default-adhesion:

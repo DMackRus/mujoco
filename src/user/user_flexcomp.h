@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <mujoco/mujoco.h>
+#include "user/user_api.h"
 #include "user/user_model.h"
 #include "user/user_objects.h"
 
@@ -39,7 +40,7 @@ typedef enum _mjtFcompType {
 class mjCFlexcomp {
  public:
   mjCFlexcomp(void);
-  bool Make(mjCModel* model, mjCBody* body, char* error, int error_sz);
+  bool Make(mjCModel* model, mjmBody* body, char* error, int error_sz);
 
   bool MakeGrid(char* error, int error_sz);
   bool MakeBox(char* error, int error_sz);
@@ -87,10 +88,9 @@ class mjCFlexcomp {
   std::vector<float> texcoord;    // vertex texture coordinates
 
   // plugin support
-  bool is_plugin;
   std::string plugin_name;
   std::string plugin_instance_name;
-  mjCPlugin* plugin_instance;
+  mjmPlugin plugin;
 };
 
 #endif  // MUJOCO_SRC_USER_USER_FLEXCOMP_H_
