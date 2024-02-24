@@ -139,6 +139,9 @@ MJAPI void mj_forwardSkip(const mjModel* m, mjData* d, int skipstage, int skipse
 // Inverse dynamics with skip; skipstage is mjtStage.
 MJAPI void mj_inverseSkip(const mjModel* m, mjData* d, int skipstage, int skipsensor);
 
+// Step with skip; skipstage is mjtStage.
+MJAPI void mj_stepSkip(const mjModel* m, mjData* d, int skipstage, int skipsensor);
+
 
 //---------------------------------- Initialization ------------------------------------------------
 
