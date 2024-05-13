@@ -32,8 +32,10 @@ test_model() {
       # this test can take several minutes under ASAN
       return 0
     fi
-    if [[ "$model" == */benchmark/testdata/humanoid200.xml
-        || "$model" == */engine/testdata/collision_convex/stacked_boxes.xml
+    if [[ "$model" == */benchmark/testdata/humanoid200.xml ||
+          "$model" == */engine/testdata/collision_convex/stacked_boxes.xml ||
+          "$model" == */user/testdata/shark_22_ascii_fTetWild.xml ||
+          "$model" == */user/testdata/shark_22_binary_fTetWild.xml
     ]]; then
       iterations=2
     fi
@@ -64,6 +66,10 @@ shopt -s globstar
 for model_dir in ${MODEL_DIRS[@]}; do
   echo "Looking in $model_dir"
   for model in $model_dir/**/*.xml; do
+    if [[ $(basename $model) == malformed* ]]; then
+      echo "Skipping $model" >&2
+      continue
+    fi
     if [[ $(basename $model) == malformed* ]]; then
       echo "Skipping $model" >&2
       continue

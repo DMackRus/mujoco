@@ -108,7 +108,7 @@ public const int mjMAXLINEPNT = 1000;
 public const int mjMAXPLANEGRID = 200;
 public const bool THIRD_PARTY_MUJOCO_MJXMACRO_H_ = true;
 public const bool THIRD_PARTY_MUJOCO_MUJOCO_H_ = true;
-public const int mjVERSION_HEADER = 313;
+public const int mjVERSION_HEADER = 316;
 
 
 // ------------------------------------Enums------------------------------------
@@ -164,10 +164,9 @@ public enum mjtEnableBit : int{
   mjENBL_ENERGY = 2,
   mjENBL_FWDINV = 4,
   mjENBL_INVDISCRETE = 8,
-  mjENBL_SENSORNOISE = 16,
-  mjENBL_MULTICCD = 32,
-  mjENBL_ISLAND = 64,
-  mjNENABLE = 7,
+  mjENBL_MULTICCD = 16,
+  mjENBL_ISLAND = 32,
+  mjNENABLE = 6,
 }
 public enum mjtJoint : int{
   mjJNT_FREE = 0,
@@ -302,6 +301,7 @@ public enum mjtObj : int{
   mjOBJ_KEY = 24,
   mjOBJ_PLUGIN = 25,
   mjNOBJECT = 26,
+  mjOBJ_FRAME = 100,
 }
 public enum mjtConstraint : int{
   mjCNSTR_EQUALITY = 0,
@@ -358,9 +358,12 @@ public enum mjtSensor : int{
   mjSENS_SUBTREECOM = 34,
   mjSENS_SUBTREELINVEL = 35,
   mjSENS_SUBTREEANGMOM = 36,
-  mjSENS_CLOCK = 37,
-  mjSENS_PLUGIN = 38,
-  mjSENS_USER = 39,
+  mjSENS_GEOMDIST = 37,
+  mjSENS_GEOMNORMAL = 38,
+  mjSENS_GEOMFROMTO = 39,
+  mjSENS_CLOCK = 40,
+  mjSENS_PLUGIN = 41,
+  mjSENS_USER = 42,
 }
 public enum mjtStage : int{
   mjSTAGE_NONE = 0,
@@ -5163,6 +5166,7 @@ public unsafe struct mjModel_ {
   public int nD;
   public int nB;
   public int ntree;
+  public int ngravcomp;
   public int nemax;
   public int njmax;
   public int nconmax;
@@ -5217,6 +5221,7 @@ public unsafe struct mjModel_ {
   public int* jnt_group;
   public byte* jnt_limited;
   public byte* jnt_actfrclimited;
+  public byte* jnt_actgravcomp;
   public double* jnt_solref;
   public double* jnt_solimp;
   public double* jnt_pos;
@@ -5293,6 +5298,7 @@ public unsafe struct mjModel_ {
   public int* light_targetbodyid;
   public byte* light_directional;
   public byte* light_castshadow;
+  public float* light_bulbradius;
   public byte* light_active;
   public double* light_pos;
   public double* light_dir;
@@ -5373,6 +5379,7 @@ public unsafe struct mjModel_ {
   public int* mesh_facenormal;
   public int* mesh_facetexcoord;
   public int* mesh_graph;
+  public double* mesh_scale;
   public double* mesh_pos;
   public double* mesh_quat;
   public int* mesh_pathadr;
@@ -5417,6 +5424,8 @@ public unsafe struct mjModel_ {
   public float* mat_specular;
   public float* mat_shininess;
   public float* mat_reflectance;
+  public float* mat_metallic;
+  public float* mat_roughness;
   public float* mat_rgba;
   public int* pair_dim;
   public int* pair_geom1;
@@ -5869,6 +5878,7 @@ public unsafe struct mjvLight_ {
   public byte headlight;
   public byte directional;
   public byte castshadow;
+  public float bulbradius;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -6146,6 +6156,7 @@ public unsafe struct model {
   public float* cam_sensorsize;
   public byte* light_directional;
   public byte* light_castshadow;
+  public float* light_bulbradius;
   public byte* light_active;
   public float* light_attenuation;
   public float* light_cutoff;
@@ -6207,6 +6218,8 @@ public unsafe struct model {
   public float* mat_specular;
   public float* mat_shininess;
   public float* mat_reflectance;
+  public float* mat_metallic;
+  public float* mat_roughness;
   public float* mat_rgba;
   public int* eq_type;
   public int* eq_obj1id;
@@ -6421,10 +6434,10 @@ public static unsafe extern void mj_freeStack(mjData_* d);
 public static unsafe extern void* mj_stackAllocByte(mjData_* d, UIntPtr bytes, UIntPtr alignment);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
-public static unsafe extern double* mj_stackAllocNum(mjData_* d, int size);
+public static unsafe extern double* mj_stackAllocNum(mjData_* d, UIntPtr size);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
-public static unsafe extern int* mj_stackAllocInt(mjData_* d, int size);
+public static unsafe extern int* mj_stackAllocInt(mjData_* d, UIntPtr size);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
 public static unsafe extern void mj_deleteData(mjData_* d);
@@ -6628,6 +6641,9 @@ public static unsafe extern void mj_jacSite(mjModel_* m, mjData_* d, double* jac
 public static unsafe extern void mj_jacPointAxis(mjModel_* m, mjData_* d, double* jacPoint, double* jacAxis, double* point, double* axis, int body);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
+public static unsafe extern void mj_angmomMat(mjModel_* m, mjData_* d, double* mat, int body);
+
+[DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
 public static unsafe extern int mj_name2id(mjModel_* m, int type, [MarshalAs(UnmanagedType.LPStr)]string name);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
@@ -6654,6 +6670,9 @@ public static unsafe extern void mj_objectVelocity(mjModel_* m, mjData_* d, int 
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
 public static unsafe extern void mj_objectAcceleration(mjModel_* m, mjData_* d, int objtype, int objid, double* res, int flg_local);
+
+[DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
+public static unsafe extern double mj_geomDistance(mjModel_* m, mjData_* d, int geom1, int geom2, double distmax, double* fromto);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
 public static unsafe extern void mj_contactForce(mjModel_* m, mjData_* d, int id, double* result);
@@ -7124,6 +7143,9 @@ public static unsafe extern void mju_quatIntegrate(double* quat, double* vel, do
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
 public static unsafe extern void mju_quatZ2Vec(double* quat, double* vec);
+
+[DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
+public static unsafe extern void mju_euler2Quat(double* quat, double* euler, [MarshalAs(UnmanagedType.LPStr)]string seq);
 
 [DllImport("mujoco", CallingConvention = CallingConvention.Cdecl)]
 public static unsafe extern void mju_mulPose(double* posres, double* quatres, double* pos1, double* quat1, double* pos2, double* quat2);

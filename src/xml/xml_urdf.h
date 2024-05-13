@@ -20,7 +20,6 @@
 #include <vector>
 
 #include "user/user_api.h"
-#include "user/user_model.h"
 #include "xml/xml_base.h"
 #include "tinyxml2.h"
 
@@ -52,8 +51,8 @@ class mjXURDF : public mjXBase {
   void AddToTree(int n);                                           // add body to mjCModel tree
   void Body(tinyxml2::XMLElement* body_elem);                      // parse body
   void Joint(tinyxml2::XMLElement* joint_elem);                    // parse joint
-  mjmGeom* Geom(tinyxml2::XMLElement* geom_elem,
-                mjmBody* pbody, bool collision);      // parse origin and geometry of geom
+  mjsGeom* Geom(tinyxml2::XMLElement* geom_elem,
+                mjsBody* pbody, bool collision);      // parse origin and geometry of geom
   void Origin(tinyxml2::XMLElement* origin_elem, double* pos, double* quat); // parse origin element
 
   void MakeMaterials(tinyxml2::XMLElement* elem);     // find all materials recursively

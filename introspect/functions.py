@@ -774,7 +774,7 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
              ),
              FunctionParameterDecl(
                  name='size',
-                 type=ValueType(name='int'),
+                 type=ValueType(name='size_t'),
              ),
          ),
          doc='Allocate array of mjtNums on mjData stack. Call mju_error on stack overflow.',  # pylint: disable=line-too-long
@@ -794,7 +794,7 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
              ),
              FunctionParameterDecl(
                  name='size',
-                 type=ValueType(name='int'),
+                 type=ValueType(name='size_t'),
              ),
          ),
          doc='Allocate array of ints on mjData stack. Call mju_error on stack overflow.',  # pylint: disable=line-too-long
@@ -2402,6 +2402,36 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
          ),
          doc='Compute translation end-effector Jacobian of point, and rotation Jacobian of axis.',  # pylint: disable=line-too-long
      )),
+    ('mj_angmomMat',
+     FunctionDecl(
+         name='mj_angmomMat',
+         return_type=ValueType(name='void'),
+         parameters=(
+             FunctionParameterDecl(
+                 name='m',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjModel', is_const=True),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='d',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjData'),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='mat',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='body',
+                 type=ValueType(name='int'),
+             ),
+         ),
+         doc='Compute subtree angular momentum matrix.',
+     )),
     ('mj_name2id',
      FunctionDecl(
          name='mj_name2id',
@@ -2712,6 +2742,45 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
              ),
          ),
          doc='Compute object 6D acceleration (rot:lin) in object-centered frame, world/local orientation.',  # pylint: disable=line-too-long
+     )),
+    ('mj_geomDistance',
+     FunctionDecl(
+         name='mj_geomDistance',
+         return_type=ValueType(name='mjtNum'),
+         parameters=(
+             FunctionParameterDecl(
+                 name='m',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjModel', is_const=True),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='d',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjData', is_const=True),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='geom1',
+                 type=ValueType(name='int'),
+             ),
+             FunctionParameterDecl(
+                 name='geom2',
+                 type=ValueType(name='int'),
+             ),
+             FunctionParameterDecl(
+                 name='distmax',
+                 type=ValueType(name='mjtNum'),
+             ),
+             FunctionParameterDecl(
+                 name='fromto',
+                 type=ArrayType(
+                     inner_type=ValueType(name='mjtNum'),
+                     extents=(6,),
+                 ),
+             ),
+         ),
+         doc='Returns smallest signed distance between two geoms and optionally segment from geom1 to geom2.',  # pylint: disable=line-too-long
      )),
     ('mj_contactForce',
      FunctionDecl(
@@ -4409,7 +4478,7 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
              FunctionParameterDecl(
                  name='d',
                  type=PointerType(
-                     inner_type=ValueType(name='mjData'),
+                     inner_type=ValueType(name='mjData', is_const=True),
                  ),
              ),
              FunctionParameterDecl(
@@ -4435,7 +4504,7 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
              FunctionParameterDecl(
                  name='d',
                  type=PointerType(
-                     inner_type=ValueType(name='mjData'),
+                     inner_type=ValueType(name='mjData', is_const=True),
                  ),
              ),
              FunctionParameterDecl(
@@ -4467,7 +4536,7 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
              FunctionParameterDecl(
                  name='d',
                  type=PointerType(
-                     inner_type=ValueType(name='mjData'),
+                     inner_type=ValueType(name='mjData', is_const=True),
                  ),
              ),
              FunctionParameterDecl(
@@ -6951,6 +7020,34 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
              ),
          ),
          doc='Construct quaternion performing rotation from z-axis to given vector.',  # pylint: disable=line-too-long
+     )),
+    ('mju_euler2Quat',
+     FunctionDecl(
+         name='mju_euler2Quat',
+         return_type=ValueType(name='void'),
+         parameters=(
+             FunctionParameterDecl(
+                 name='quat',
+                 type=ArrayType(
+                     inner_type=ValueType(name='mjtNum'),
+                     extents=(4,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='euler',
+                 type=ArrayType(
+                     inner_type=ValueType(name='mjtNum', is_const=True),
+                     extents=(3,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='seq',
+                 type=PointerType(
+                     inner_type=ValueType(name='char', is_const=True),
+                 ),
+             ),
+         ),
+         doc="Convert sequence of Euler angles (radians) to quaternion. seq[0,1,2] must be in 'xyzXYZ', lower/upper-case mean intrinsic/extrinsic rotations.",  # pylint: disable=line-too-long
      )),
     ('mju_mulPose',
      FunctionDecl(

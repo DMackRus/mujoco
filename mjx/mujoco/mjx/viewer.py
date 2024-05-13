@@ -52,9 +52,8 @@ def _main(argv: Sequence[str]) -> None:
     while True:
       start = time.time()
 
-      # TODO(robotics-simulation): debug xfrc_applied sometimes causing NaN
       # TODO(robotics-simulation): recompile when changing disable flags, etc.
-      dx = dx.replace(ctrl=d.ctrl, xfrc_applied=d.xfrc_applied)
+      dx = dx.replace(ctrl=d.ctrl, act=d.act, xfrc_applied=d.xfrc_applied)
       dx = dx.replace(qpos=d.qpos, qvel=d.qvel, time=d.time)  # handle resets
       mx = mx.tree_replace({
           'opt.gravity': m.opt.gravity,
