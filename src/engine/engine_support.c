@@ -20,6 +20,7 @@
 
 #include <mujoco/mjdata.h>
 #include <mujoco/mjmodel.h>
+#include "engine/engine_collision_driver.h"
 #include "engine/engine_core_constraint.h"
 #include "engine/engine_crossplatform.h"
 #include "engine/engine_io.h"
@@ -38,8 +39,8 @@
 
 //-------------------------- Constants -------------------------------------------------------------
 
- #define mjVERSION 313
-#define mjVERSIONSTRING "3.1.3"
+ #define mjVERSION 316
+#define mjVERSIONSTRING "3.1.6"
 
 // names of disable flags
 const char* mjDISABLESTRING[mjNDISABLE] = {
@@ -66,7 +67,6 @@ const char* mjENABLESTRING[mjNENABLE] = {
   "Override",
   "Energy",
   "Fwdinv",
-  "Sensornoise",
   "InvDiscrete",
   "MultiCCD",
   "Island"
@@ -776,6 +776,76 @@ int mj_jacSum(const mjModel* m, mjData* d, int* chain,
 
 
 
+// compute subtree angular momentum matrix
+void mj_angmomMat(const mjModel* m, mjData* d, mjtNum* mat, int body) {
+  int nv = m->nv;
+  mj_markStack(d);
+
+  // stack allocations
+  mjtNum* jacp = mj_stackAllocNum(d, 3*nv);
+  mjtNum* jacr = mj_stackAllocNum(d, 3*nv);
+  mjtNum* term1 = mj_stackAllocNum(d, 3*nv);
+  mjtNum* term2 = mj_stackAllocNum(d, 3*nv);
+
+  // clear output
+  mju_zero(mat, 3*nv);
+
+  // save the location of the subtree COM
+  mjtNum subtree_com[3];
+  mju_copy3(subtree_com, d->subtree_com+3*body);
+
+  for (int b=body; b < m->nbody; b++) {
+    // end of body subtree, break from the loop
+    if (b > body && m->body_parentid[b] < body) {
+      break;
+    }
+
+    // linear and angular velocity Jacobian of the body COM (inertial frame)
+    mj_jacBodyCom(m, d, jacp, jacr, b);
+
+    // orientation of the COM (inertial) frame of b-th body
+    mjtNum ximat[9];
+    mju_copy(ximat, d->ximat+9*b, 9);
+
+    // save the inertia matrix of b-th body
+    mjtNum inertia[9] = {0};
+    inertia[0] = m->body_inertia[3*b];   // inertia(1,1)
+    inertia[4] = m->body_inertia[3*b+1]; // inertia(2,2)
+    inertia[8] = m->body_inertia[3*b+2]; // inertia(3,3)
+
+    // term1 = body angular momentum about self COM in world frame
+    mjtNum tmp1[9], tmp2[9];
+    mju_mulMatMat3(tmp1, ximat, inertia);          // tmp1  = ximat * inertia
+    mju_mulMatMatT3(tmp2, tmp1, ximat);            // tmp2  = ximat * inertia * ximat^T
+    mju_mulMatMat(term1, tmp2, jacr, 3, 3, nv);    // term1 = ximat * inertia * ximat^T * jacr
+
+    // location of body COM w.r.t subtree COM
+    mjtNum com[3];
+    mju_sub3(com, d->xipos+3*b, subtree_com);
+
+    // skew symmetric matrix representing body_com vector
+    mjtNum com_mat[9] = {0};
+    com_mat[1] = -com[2];
+    com_mat[2] = com[1];
+    com_mat[3] = com[2];
+    com_mat[5] = -com[0];
+    com_mat[6] = -com[1];
+    com_mat[7] = com[0];
+
+    // term2 = moment of linear momentum
+    mju_mulMatMat(term2, com_mat, jacp, 3, 3, nv);   // term2 = com_mat * jacp
+    mju_scl(term2, term2, m->body_mass[b], 3 * nv);  // term2 = com_mat * jacp * mass
+
+    // mat += term1 + term2
+    mju_addTo(mat, term1, 3*nv);
+    mju_addTo(mat, term2, 3*nv);
+  }
+
+  mj_freeStack(d);
+}
+
+
+
 //-------------------------- name functions --------------------------------------------------------
 
 // get number of objects and name addresses for given object type
@@ -980,11 +1050,11 @@ static int _getnumadr(const mjModel* m, mjtObj type, int** padr, int* mapadr) {
 }
 
 // get string hash, see http://www.cse.yorku.ca/~oz/hash.html
-uint64_t mj_hashdjb2(const char* s, uint64_t n) {
+uint64_t mj_hashString(const char* s, uint64_t n) {
   uint64_t h = 5381;
   int c;
   while ((c = *s++)) {
-    h  = ((h << 5) + h) + c;
+    h = ((h << 5) + h) ^ c;
   }
   return h % n;
 }
@@ -1000,7 +1070,7 @@ int mj_name2id(const mjModel* m, int type, const char* name) {
 
   // search
   if (num) {    // look up at hash address
-    uint64_t hash = mj_hashdjb2(name, num);
+    uint64_t hash = mj_hashString(name, num);
     uint64_t i = hash;
 
     do {
@@ -1633,6 +1703,48 @@ void mj_objectAcceleration(const mjModel* m, const mjData* d,
 
 
 //-------------------------- miscellaneous ---------------------------------------------------------
+
+// returns the smallest distance between two geoms
+mjtNum mj_geomDistance(const mjModel* m, const mjData* d, int geom1, int geom2, mjtNum distmax,
+                       mjtNum fromto[6]) {
+  mjContact con[mjMAXCONPAIR];
+  mjtNum dist = distmax;
+  if (fromto) mju_zero(fromto, 6);
+
+  // flip geom order if required
+  int flip = m->geom_type[geom1] > m->geom_type[geom2];
+  int g1 = flip ? geom2 : geom1;
+  int g2 = flip ? geom1 : geom2;
+  int type1 = m->geom_type[g1];
+  int type2 = m->geom_type[g2];
+
+  // call collision function if it exists
+  if (!mjCOLLISIONFUNC[type1][type2]) {
+    return dist;
+  }
+  int num = mjCOLLISIONFUNC[type1][type2](m, d, con, g1, g2, distmax);
+
+  // find smallest distance
+  int smallest = -1;
+  for (int i=0; i < num; i++) {
+    mjtNum dist_i = con[i].dist;
+    if (dist_i < dist) {
+      dist = dist_i;
+      smallest = i;
+    }
+  }
+
+  // write fromto if given and a collision has been found
+  if (fromto && smallest >= 0) {
+    mjtNum sign = flip ? -1 : 1;
+    mju_addScl3(fromto+0, con[smallest].pos, con[smallest].frame, -0.5*sign*dist);
+    mju_addScl3(fromto+3, con[smallest].pos, con[smallest].frame, 0.5*sign*dist);
+  }
+
+  return dist;
+}
+
+
 
 // extract 6D force:torque for one contact, in contact frame
 void mj_contactForce(const mjModel* m, const mjData* d, int id, mjtNum result[6]) {

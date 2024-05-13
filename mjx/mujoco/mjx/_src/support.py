@@ -13,18 +13,19 @@
 # limitations under the License.
 # ==============================================================================
 """Engine support functions."""
-
 from typing import Optional, Tuple, Union
 
 import jax
 from jax import numpy as jp
 import mujoco
+from mujoco.mjx._src import math
 from mujoco.mjx._src import scan
 # pylint: disable=g-importing-member
 from mujoco.mjx._src.types import Data
 from mujoco.mjx._src.types import JacobianType
 from mujoco.mjx._src.types import Model
 # pylint: enable=g-importing-member
+import numpy as np
 
 
 def is_sparse(m: Union[mujoco.MjModel, Model]) -> bool:
@@ -149,19 +150,6 @@ def jac(
   return jacp, jacr
 
 
-def jac_dif_pair(
-    m: Model,
-    d: Data,
-    pos: jax.Array,
-    body_1: jax.Array,
-    body_2: jax.Array,
-) -> jax.Array:
-  """Compute Jacobian difference for two body points."""
-  jacp2, _ = jac(m, d, pos, body_2)
-  jacp1, _ = jac(m, d, pos, body_1)
-  return jacp2 - jacp1
-
-
 def apply_ft(
     m: Model,
     d: Data,
@@ -186,3 +174,146 @@ def xfrc_accumulate(m: Model, d: Data) -> jax.Array:
       jp.arange(m.nbody),
   )
   return jp.sum(qfrc, axis=0)
+
+
+def local_to_global(
+    world_pos: jax.Array,
+    world_quat: jax.Array,
+    local_pos: jax.Array,
+    local_quat: jax.Array,
+) -> Tuple[jax.Array, jax.Array]:
+  """Converts local position/orientation to world frame."""
+  pos = world_pos + math.rotate(local_pos, world_quat)
+  mat = math.quat_to_mat(math.quat_mul(world_quat, local_quat))
+  return pos, mat
+
+
+def _getnum(m: Union[Model, mujoco.MjModel], obj: mujoco._enums.mjtObj) -> int:
+  """Gets the number of objects for the given object type."""
+  return {
+      mujoco.mjtObj.mjOBJ_BODY: m.nbody,
+      mujoco.mjtObj.mjOBJ_JOINT: m.njnt,
+      mujoco.mjtObj.mjOBJ_GEOM: m.ngeom,
+      mujoco.mjtObj.mjOBJ_SITE: m.nsite,
+      mujoco.mjtObj.mjOBJ_CAMERA: m.ncam,
+      mujoco.mjtObj.mjOBJ_MESH: m.nmesh,
+      mujoco.mjtObj.mjOBJ_PAIR: m.npair,
+      mujoco.mjtObj.mjOBJ_EQUALITY: m.neq,
+      mujoco.mjtObj.mjOBJ_ACTUATOR: m.nu,
+      mujoco.mjtObj.mjOBJ_SENSOR: m.nsensor,
+      mujoco.mjtObj.mjOBJ_NUMERIC: m.nnumeric,
+      mujoco.mjtObj.mjOBJ_TUPLE: m.ntuple,
+      mujoco.mjtObj.mjOBJ_KEY: m.nkey,
+  }.get(obj, 0)
+
+
+def _getadr(
+    m: Union[Model, mujoco.MjModel], obj: mujoco._enums.mjtObj
+) -> np.ndarray:
+  """Gets the name addresses for the given object type."""
+  return {
+      mujoco.mjtObj.mjOBJ_BODY: m.name_bodyadr,
+      mujoco.mjtObj.mjOBJ_JOINT: m.name_jntadr,
+      mujoco.mjtObj.mjOBJ_GEOM: m.name_geomadr,
+      mujoco.mjtObj.mjOBJ_SITE: m.name_siteadr,
+      mujoco.mjtObj.mjOBJ_CAMERA: m.name_camadr,
+      mujoco.mjtObj.mjOBJ_MESH: m.name_meshadr,
+      mujoco.mjtObj.mjOBJ_PAIR: m.name_pairadr,
+      mujoco.mjtObj.mjOBJ_EQUALITY: m.name_eqadr,
+      mujoco.mjtObj.mjOBJ_ACTUATOR: m.name_actuatoradr,
+      mujoco.mjtObj.mjOBJ_SENSOR: m.name_sensoradr,
+      mujoco.mjtObj.mjOBJ_NUMERIC: m.name_numericadr,
+      mujoco.mjtObj.mjOBJ_TUPLE: m.name_tupleadr,
+      mujoco.mjtObj.mjOBJ_KEY: m.name_keyadr,
+  }[obj]
+
+
+def id2name(
+    m: Union[Model, mujoco.MjModel], typ: mujoco._enums.mjtObj, i: int
+) -> Optional[str]:
+  """Gets the name of an object with the specified mjtObj type and id.
+
+  See mujoco.id2name for more info.
+
+  Args:
+    m: mujoco.MjModel or mjx.Model
+    typ: mujoco.mjtObj type
+    i: the id
+
+  Returns:
+    the name string, or None if not found
+  """
+  num = _getnum(m, typ)
+  if i < 0 or i >= num:
+    return None
+
+  adr = _getadr(m, typ)
+  name = m.names[adr[i] :].decode('utf-8').split('\x00', 1)[0]
+  return name or None
+
+
+def name2id(
+    m: Union[Model, mujoco.MjModel], typ: mujoco._enums.mjtObj, name: str
+) -> int:
+  """Gets the id of an object with the specified mjtObj type and name.
+
+  See mujoco.mj_name2id for more info.
+
+  Args:
+    m: mujoco.MjModel or mjx.Model
+    typ: mujoco.mjtObj type
+    name: the name of the object
+
+  Returns:
+   the id, or -1 if not found
+  """
+  num = _getnum(m, typ)
+  adr = _getadr(m, typ)
+
+  # TODO: consider using MjModel.names_map instead
+  names_map = {
+      m.names[adr[i] :].decode('utf-8').split('\x00', 1)[0]: i
+      for i in range(num)
+  }
+
+  return names_map.get(name, -1)
+
+
+def _decode_pyramid(
+    pyramid: jax.Array, mu: jax.Array, condim: int
+) -> jax.Array:
+  """Converts pyramid representation to contact force."""
+  force = jp.zeros(6, dtype=float)
+  if condim == 1:
+    return force.at[0].set(pyramid[0])
+
+  # force_normal = sum(pyramid0_i + pyramid1_i)
+  force = force.at[0].set(pyramid[0 : 2 * (condim - 1)].sum())
+
+  # force_tangent_i = (pyramid0_i - pyramid1_i) * mu_i
+  i = np.arange(0, condim)
+  force = force.at[i + 1].set((pyramid[2 * i] - pyramid[2 * i + 1]) * mu[i])
+
+  return force
+
+
+def contact_force(
+    m: Model, d: Data, contact_id: int, to_world_frame: bool = False
+) -> jax.Array:
+  """Extract 6D force:torque for one contact, in contact frame by default."""
+  efc_address = d.contact.efc_address[contact_id]
+  condim = d.contact.dim[contact_id]
+  if m.opt.cone == mujoco.mjtCone.mjCONE_PYRAMIDAL:
+    force = _decode_pyramid(
+        d.efc_force[efc_address:], d.contact.friction[contact_id], condim
+    )
+  elif m.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
+    raise NotImplementedError('Elliptic cone force is not implemented yet.')
+  else:
+    raise ValueError(f'Unknown cone type: {m.opt.cone}')
+
+  if to_world_frame:
+    force = force.reshape((-1, 3)) @ d.contact.frame[contact_id]
+    force = force.reshape(-1)
+
+  return force * (efc_address >= 0)

@@ -24,7 +24,7 @@ extern "C" {
 #endif
 
 // header version; should match the library version as returned by mj_version()
-#define mjVERSION_HEADER 313
+#define mjVERSION_HEADER 316
 
 // needed to define size_t, fabs and log10
 #include <stdlib.h>
@@ -206,10 +206,10 @@ MJAPI void mj_freeStack(mjData* d);
 MJAPI void* mj_stackAllocByte(mjData* d, size_t bytes, size_t alignment);
 
 // Allocate array of mjtNums on mjData stack. Call mju_error on stack overflow.
-MJAPI mjtNum* mj_stackAllocNum(mjData* d, int size);
+MJAPI mjtNum* mj_stackAllocNum(mjData* d, size_t size);
 
 // Allocate array of ints on mjData stack. Call mju_error on stack overflow.
-MJAPI int* mj_stackAllocInt(mjData* d, int size);
+MJAPI int* mj_stackAllocInt(mjData* d, size_t size);
 
 // Free memory allocation in mjData.
 MJAPI void mj_deleteData(mjData* d);
@@ -433,6 +433,9 @@ MJAPI void mj_jacSite(const mjModel* m, const mjData* d, mjtNum* jacp, mjtNum* j
 MJAPI void mj_jacPointAxis(const mjModel* m, mjData* d, mjtNum* jacPoint, mjtNum* jacAxis,
                            const mjtNum point[3], const mjtNum axis[3], int body);
 
+// Compute subtree angular momentum matrix.
+MJAPI void mj_angmomMat(const mjModel* m, mjData* d, mjtNum* mat, int body);
+
 // Get id of object with the specified mjtObj type and name, returns -1 if id not found.
 MJAPI int mj_name2id(const mjModel* m, int type, const char* name);
 
@@ -463,6 +466,10 @@ MJAPI void mj_objectVelocity(const mjModel* m, const mjData* d,
 // Compute object 6D acceleration (rot:lin) in object-centered frame, world/local orientation.
 MJAPI void mj_objectAcceleration(const mjModel* m, const mjData* d,
                                  int objtype, int objid, mjtNum res[6], int flg_local);
+
+// Returns smallest signed distance between two geoms and optionally segment from geom1 to geom2.
+MJAPI mjtNum mj_geomDistance(const mjModel* m, const mjData* d, int geom1, int geom2,
+                             mjtNum distmax, mjtNum fromto[6]);
 
 // Extract 6D force:torque given contact id, in the contact frame.
 MJAPI void mj_contactForce(const mjModel* m, const mjData* d, int id, mjtNum result[6]);
@@ -684,13 +691,13 @@ MJAPI void mjv_addGeoms(const mjModel* m, mjData* d, const mjvOption* opt,
                         const mjvPerturb* pert, int catmask, mjvScene* scn);
 
 // Make list of lights.
-MJAPI void mjv_makeLights(const mjModel* m, mjData* d, mjvScene* scn);
+MJAPI void mjv_makeLights(const mjModel* m, const mjData* d, mjvScene* scn);
 
 // Update camera.
-MJAPI void mjv_updateCamera(const mjModel* m, mjData* d, mjvCamera* cam, mjvScene* scn);
+MJAPI void mjv_updateCamera(const mjModel* m, const mjData* d, mjvCamera* cam, mjvScene* scn);
 
 // Update skins.
-MJAPI void mjv_updateSkin(const mjModel* m, mjData* d, mjvScene* scn);
+MJAPI void mjv_updateSkin(const mjModel* m, const mjData* d, mjvScene* scn);
 
 
 //---------------------------------- OpenGL rendering ----------------------------------------------
@@ -1033,7 +1040,6 @@ MJAPI void mju_transformSpatial(mjtNum res[6], const mjtNum vec[6], int flg_forc
                                 const mjtNum newpos[3], const mjtNum oldpos[3],
                                 const mjtNum rotnew2old[9]);
 
-
 //---------------------------------- Quaternions ---------------------------------------------------
 
 // Rotate vector by quaternion.
@@ -1072,6 +1078,9 @@ MJAPI void mju_quatIntegrate(mjtNum quat[4], const mjtNum vel[3], mjtNum scale);
 // Construct quaternion performing rotation from z-axis to given vector.
 MJAPI void mju_quatZ2Vec(mjtNum quat[4], const mjtNum vec[3]);
 
+// Convert sequence of Euler angles (radians) to quaternion.
+// seq[0,1,2] must be in 'xyzXYZ', lower/upper-case mean intrinsic/extrinsic rotations.
+MJAPI void mju_euler2Quat(mjtNum quat[4], const mjtNum euler[3], const char* seq);
 
 //---------------------------------- Poses ---------------------------------------------------------
 
