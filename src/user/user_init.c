@@ -15,6 +15,7 @@
 #include <string.h>
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjvisualize.h>
+#include <mujoco/mjspec.h>
 #include "engine/engine_io.h"
 #include "user/user_api.h"
 
@@ -32,17 +33,16 @@ void mjs_defaultSpec(mjSpec* spec) {
   spec->stat.center[0] = mjNAN;
 
   // compiler settings
-  spec->autolimits = 1;
-  spec->settotalmass = -1;
-  spec->degree = 1;
-  spec->euler[0] = 'x';
-  spec->euler[1] = 'y';
-  spec->euler[2] = 'z';
-  spec->convexhull = 1;
-  spec->usethread = 1;
-  spec->inertiafromgeom = mjINERTIAFROMGEOM_AUTO;
-  spec->inertiagrouprange[1] = mjNGROUP-1;
-  mj_defaultLROpt(&spec->LRopt);
+  spec->compiler.autolimits = 1;
+  spec->compiler.settotalmass = -1;
+  spec->compiler.degree = 1;
+  spec->compiler.eulerseq[0] = 'x';
+  spec->compiler.eulerseq[1] = 'y';
+  spec->compiler.eulerseq[2] = 'z';
+  spec->compiler.usethread = 1;
+  spec->compiler.inertiafromgeom = mjINERTIAFROMGEOM_AUTO;
+  spec->compiler.inertiagrouprange[1] = mjNGROUP-1;
+  mj_defaultLROpt(&spec->compiler.LRopt);
 
   // engine data
   mj_defaultOption(&spec->option);
@@ -77,7 +77,6 @@ void mjs_defaultBody(mjsBody* body) {
   memset(body, 0, sizeof(mjsBody));
 
   // body frame
-  body->pos[0] = mjNAN;
   body->quat[0] = 1;
 
   // inertial frame
@@ -103,6 +102,7 @@ void mjs_defaultJoint(mjsJoint* joint) {
   joint->axis[2] = 1;
   joint->limited = mjLIMITED_AUTO;
   joint->actfrclimited = mjLIMITED_AUTO;
+  joint->align = mjALIGNFREE_AUTO;
   mj_defaultSolRefImp(joint->solref_limit, joint->solimp_limit);
   mj_defaultSolRefImp(joint->solref_friction, joint->solimp_friction);
 }
@@ -234,6 +234,7 @@ void mjs_defaultFlex(mjsFlex* flex) {
   flex->activelayers = 1;
   flex->rgba[0] = flex->rgba[1] = flex->rgba[2] = 0.5f;
   flex->rgba[3] = 1.0f;
+  flex->thickness = -1;
 }
 
 
@@ -243,6 +244,8 @@ void mjs_defaultMesh(mjsMesh* mesh) {
   memset(mesh, 0, sizeof(mjsMesh));
   mesh->refquat[0] = 1;
   mesh->scale[0] = mesh->scale[1] = mesh->scale[2] = 1;
+  mesh->maxhullvert = -1;
+  mesh->inertia = mjINERTIA_LEGACY;
 }
 
 
@@ -271,6 +274,7 @@ void mjs_defaultTexture(mjsTexture* texture) {
   texture->rgb2[0] = texture->rgb2[1] = texture->rgb2[2] = 0.5;
   texture->random = 0.01;
   texture->gridsize[0] = texture->gridsize[1] = 1;
+  texture->nchannel = 3;
   char defaultlayout[sizeof(texture->gridlayout)] = "............";
   strncpy(texture->gridlayout, defaultlayout, sizeof(texture->gridlayout));
 }
@@ -398,6 +402,5 @@ void mjs_defaultKey(mjsKey* key) {
 // default plugin attributes
 void mjs_defaultPlugin(mjsPlugin* plugin) {
   memset(plugin, 0, sizeof(mjsPlugin));
-  plugin->plugin_slot = -1;
 }
 

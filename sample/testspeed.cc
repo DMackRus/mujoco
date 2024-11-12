@@ -34,17 +34,16 @@ mjData* d[maxthread];
 // per-thread statistics
 int contacts[maxthread];
 int constraints[maxthread];
-double simtime[maxthread];
-
+mjtNum simtime[maxthread];
 
 // timer
-std::chrono::steady_clock::time_point tm_start;
 mjtNum gettm(void) {
-  std::chrono::duration<double, std::micro> elapsed;
-  elapsed = std::chrono::steady_clock::now() - tm_start;
+  using std::chrono::steady_clock;
+  using Microseconds = std::chrono::duration<double, std::micro>;
+  static steady_clock::time_point tm_start = steady_clock::now();
+  auto elapsed = Microseconds(steady_clock::now() - tm_start);
   return elapsed.count();
 }
-
 
 // deallocate and print message
 int finish(const char* msg = NULL, mjModel* m = NULL) {
@@ -87,7 +86,7 @@ void simulate(int id, int nstep, mjtNum* ctrl) {
   constraints[id] = 0;
 
   // run and time
-  double start = gettm();
+  mjtNum start = gettm();
   for (int i=0; i < nstep; i++) {
     // inject pseudo-random control noise
     mju_copy(d[id]->ctrl, ctrl + i*m->nu, m->nu);
@@ -126,7 +125,7 @@ int main(int argc, char** argv) {
   // read arguments
   int nstep = 10000, nthread = 0, npoolthread = 0;
   // inject small noise by default, to avoid fixed contact state
-  mjtNum ctrlnoise = 0.01;
+  double ctrlnoise = 0.01;
   if (argc > 2 && (std::sscanf(argv[2], "%d", &nstep) != 1 || nstep <= 0)) {
     return finish("Invalid nstep argument");
   }
@@ -149,7 +148,7 @@ int main(int argc, char** argv) {
 
   // get filename, determine file type
   std::string filename(argv[1]);
-  bool binary = (filename.find(".mjb") != std::string::npos);
+  bool binary = (filename.find(".mjb") != std::string::npos);  // NOLINT
 
   // load model
   char error[1000] = "Could not load binary model";
@@ -187,12 +186,21 @@ int main(int argc, char** argv) {
   mjcb_time = gettm;
 
   // print start
-  std::printf("\nRolling out %d steps%s, at dt = %g",
+  std::printf("\nRolling out %d steps%s at dt = %g",
               nstep,
               nthread > 1 ? " per thread" : "",
               m->opt.timestep);
+
+  // print precision
+  if (sizeof(mjtNum) == 4) {
+    std::printf(", using single precision");
+  } else {
+    std::printf(", using double precision");
+  }
+
+  // print threadpool size
   if (npoolthread > 1) {
-    std::printf(", using %d threads for engine-internal threadpool", npoolthread);
+    std::printf(", using %d threads", npoolthread);
   }
   std::printf("...\n\n");
 
@@ -229,7 +237,10 @@ int main(int argc, char** argv) {
   std::printf(" Time per step        : %.1f %ss\n\n", 1e6*simtime[0]/nstep, mu_str);
   std::printf(" Contacts per step    : %.2f\n", static_cast<float>(contacts[0])/nstep);
   std::printf(" Constraints per step : %.2f\n", static_cast<float>(constraints[0])/nstep);
-  std::printf(" Degrees of freedom   : %d\n\n", m->nv);
+  std::printf(" Degrees of freedom   : %d\n", m->nv);
+  std::printf(" Memory usage         : %.1f%% of %s\n\n",
+              100 * d[0]->maxuse_arena / (double)(d[0]->narena),
+              mju_writeNumBytes(d[0]->narena));
 
   // profiler, top-level
   printf(" Internal profiler%s, %ss per step\n", nthread > 1 ? " for thread 0" : "", mu_str);

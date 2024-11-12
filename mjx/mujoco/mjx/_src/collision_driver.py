@@ -38,6 +38,7 @@ in order to guarantee static shapes for contacts and jacobians.
 """
 
 import itertools
+import os
 from typing import Dict, Iterator, List, Tuple, Union
 
 import jax
@@ -45,8 +46,12 @@ from jax import numpy as jp
 import mujoco
 from mujoco.mjx._src import support
 # pylint: disable=g-importing-member
+from mujoco.mjx._src.collision_convex import box_box
 from mujoco.mjx._src.collision_convex import capsule_convex
 from mujoco.mjx._src.collision_convex import convex_convex
+from mujoco.mjx._src.collision_convex import hfield_capsule
+from mujoco.mjx._src.collision_convex import hfield_convex
+from mujoco.mjx._src.collision_convex import hfield_sphere
 from mujoco.mjx._src.collision_convex import plane_convex
 from mujoco.mjx._src.collision_convex import sphere_convex
 from mujoco.mjx._src.collision_primitive import capsule_capsule
@@ -61,6 +66,8 @@ from mujoco.mjx._src.collision_sdf import capsule_ellipsoid
 from mujoco.mjx._src.collision_sdf import cylinder_cylinder
 from mujoco.mjx._src.collision_sdf import ellipsoid_cylinder
 from mujoco.mjx._src.collision_sdf import ellipsoid_ellipsoid
+from mujoco.mjx._src.collision_sdf import sphere_cylinder
+from mujoco.mjx._src.collision_sdf import sphere_ellipsoid
 from mujoco.mjx._src.collision_types import FunctionKey
 from mujoco.mjx._src.types import Contact
 from mujoco.mjx._src.types import Data
@@ -78,8 +85,14 @@ _COLLISION_FUNC = {
     (GeomType.PLANE, GeomType.ELLIPSOID): plane_ellipsoid,
     (GeomType.PLANE, GeomType.CYLINDER): plane_cylinder,
     (GeomType.PLANE, GeomType.MESH): plane_convex,
+    (GeomType.HFIELD, GeomType.SPHERE): hfield_sphere,
+    (GeomType.HFIELD, GeomType.CAPSULE): hfield_capsule,
+    (GeomType.HFIELD, GeomType.BOX): hfield_convex,
+    (GeomType.HFIELD, GeomType.MESH): hfield_convex,
     (GeomType.SPHERE, GeomType.SPHERE): sphere_sphere,
     (GeomType.SPHERE, GeomType.CAPSULE): sphere_capsule,
+    (GeomType.SPHERE, GeomType.CYLINDER): sphere_cylinder,
+    (GeomType.SPHERE, GeomType.ELLIPSOID): sphere_ellipsoid,
     (GeomType.SPHERE, GeomType.BOX): sphere_convex,
     (GeomType.SPHERE, GeomType.MESH): sphere_convex,
     (GeomType.CAPSULE, GeomType.CAPSULE): capsule_capsule,
@@ -90,7 +103,7 @@ _COLLISION_FUNC = {
     (GeomType.ELLIPSOID, GeomType.ELLIPSOID): ellipsoid_ellipsoid,
     (GeomType.ELLIPSOID, GeomType.CYLINDER): ellipsoid_cylinder,
     (GeomType.CYLINDER, GeomType.CYLINDER): cylinder_cylinder,
-    (GeomType.BOX, GeomType.BOX): convex_convex,
+    (GeomType.BOX, GeomType.BOX): box_box,
     (GeomType.BOX, GeomType.MESH): convex_convex,
     (GeomType.MESH, GeomType.MESH): convex_convex,
 }
@@ -210,6 +223,21 @@ def _geom_groups(
       condim = max(m.geom_condim[g1], m.geom_condim[g2])
 
     key = FunctionKey(types, data_ids, condim)
+
+    if types[0] == mujoco.mjtGeom.mjGEOM_HFIELD:
+      # add static grid bounds to the grouping key for hfield collisions
+      geom_rbound_hfield = (
+          m.geom_rbound_hfield if isinstance(m, Model) else m.geom_rbound
+      )
+      nrow, ncol = m.hfield_nrow[data_ids[0]], m.hfield_ncol[data_ids[0]]
+      xsize, ysize = m.hfield_size[data_ids[0]][:2]
+      xtick, ytick = (2 * xsize) / (ncol - 1), (2 * ysize) / (nrow - 1)
+      xbound = int(np.ceil(2 * geom_rbound_hfield[g2] / xtick)) + 1
+      xbound = min(xbound, ncol)
+      ybound = int(np.ceil(2 * geom_rbound_hfield[g2] / ytick)) + 1
+      ybound = min(ybound, nrow)
+      key = FunctionKey(types, data_ids, condim, (xbound, ybound))
+
     groups.setdefault(key, []).append((g1, g2, ip))
 
   return groups
@@ -349,11 +377,11 @@ def collision(m: Model, d: Data) -> Data:
   if d.ncon == 0:
     return d
 
-  groups = _contact_groups(m, d)
   max_geom_pairs = _numeric(m, 'max_geom_pairs')
   max_contact_points = _numeric(m, 'max_contact_points')
 
   # run collision functions on groups
+  groups = _contact_groups(m, d)
   for key, contact in groups.items():
     # determine which contacts we'll use for collision testing by running a
     # broad phase cull if requested
@@ -370,8 +398,9 @@ def collision(m: Model, d: Data) -> Data:
 
     # run the collision function specified by the grouping key
     func = _COLLISION_FUNC[key.types]
-    dist, pos, frame = func(m, d, key, contact.geom)
     ncon = func.ncon  # pytype: disable=attribute-error
+
+    dist, pos, frame = func(m, d, key, contact.geom)
     if ncon > 1:
       # repeat contacts to match the number of collisions returned
       repeat_fn = lambda x, r=ncon: jp.repeat(x, r, axis=0)
