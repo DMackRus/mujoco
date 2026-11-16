@@ -21,7 +21,7 @@
 #include <mujoco/mjmacro.h>
 #include <mujoco/mujoco.h>
 #include "engine/engine_array_safety.h"
-#include "render/glad/glad.h"
+#include "render/classic/glad/glad.h"
 
 //------------------------------------ Default themes ----------------------------------------------
 
@@ -228,7 +228,7 @@ static void initOpenGL(const mjrRect* r, const mjrContext* con) {
 
 
 
-// get text width up to specificed limit (0: 0, -1: entire string)
+// get text width up to specified limit (0: 0, -1: entire string)
 static int textwidth(const char* text, const mjrContext* con, int limit) {
   int i = 0, width = 0;
 
@@ -849,8 +849,9 @@ static void setslider(mjuiItem* it, mjUI* ui,
   rx = mju_round(rx * it->slider.divisions) / mjMAX(1, it->slider.divisions);
   rx = mjMAX(0, mjMIN(1, rx));
 
-  // compute value
-  mjtNum val = (mjtNum)(it->slider.range[0]*(1-rx) + it->slider.range[1]*rx);
+  // compute value, clamp to range
+  mjtNum val = mju_clip(it->slider.range[0]*(1-rx) + it->slider.range[1]*rx,
+                        it->slider.range[0], it->slider.range[1]);
 
   // set slider position
   if (it->type == mjITEM_SLIDERINT) {
@@ -1106,7 +1107,7 @@ static void revealcursor(mjrRect r, mjUI* ui, const mjrContext* con) {
 
   // scan backwards
   int i = ui->editcursor;
-  while (width >= 0 && i >= ui->editscroll) {
+  while (width >= 0 && i >= ui->editscroll && i > 0) {
     i--;
     width -= con->charWidth[(unsigned char)ui->edittext[i]];
   }
@@ -1523,7 +1524,7 @@ static void setitemskip(mjuiSection* s, int pass) {
 
 
 
-// Compute UI sizes: internal fuction, may be called twice per resize
+// Compute UI sizes: internal function, may be called twice per resize
 static void tryresize(mjUI* ui, const mjrContext* con) {
   // scale theme sizes
   int w_master =   SCL(ui->spacing.total,    con);
@@ -2203,7 +2204,7 @@ void mjui_update(int section, int item, const mjUI* ui,
         drawrectangle(it->rect, rgbdecor, rgbpane, con);
 
         // fill selection
-        r = radioelement(it, *(int*)it->pdata, ui, con);
+        r = radioelement(it, mjMAX(0, mjMIN(*(int*)it->pdata, it->multi.nelem-1)), ui, con);
         drawrectangle(r, rgbdecor, NULL, con);
 
         // element names
@@ -2969,7 +2970,7 @@ void mjui_render(mjUI* ui, const mjuiState* state, const mjrContext* con) {
       mjr_rectangle(r, ui->color.select2[0],
         ui->color.select2[1], ui->color.select2[2], 1);
 
-      // hightlight row under mouse
+      // highlight row under mouse
       int k = findselect(it, ui, state, con);
       if (k >= 0) {
         mjrRect r1 = r;

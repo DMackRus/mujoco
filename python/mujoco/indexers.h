@@ -15,6 +15,7 @@
 #ifndef MUJOCO_PYTHON_INDEXERS_H_
 #define MUJOCO_PYTHON_INDEXERS_H_
 
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -22,7 +23,7 @@
 #include <variant>
 #include <vector>
 
-#include <absl/container/flat_hash_map.h>
+#include "absl/container/flat_hash_map.h"
 #include <mujoco/mjxmacro.h>
 #include "indexer_xmacro.h"
 #include "raw.h"
@@ -104,6 +105,7 @@ class MjModelGroupedViewsBase {
   std::string name_;
   raw::MjModel* m_;
   pybind11::handle owner_;
+  mutable std::mutex lazy_init_mutex_;
 };
 
 #define XGROUP(MjModelGroupedViews, field, nfield, FIELD_XMACROS) \
@@ -142,6 +144,7 @@ class MjModelIndexer {
   pybind11::handle owner_;
   NameToIDMappings name_to_id_;
   IDToNameMappings id_to_name_;
+  mutable std::mutex lazy_init_mutex_;
 
   // Lazily instantiate a grouped views object when accessed from Python, but
   // cache it once made so that we can return the same one if requested again.
@@ -165,6 +168,7 @@ class MjDataGroupedViewsBase {
   int index() const { return index_; }
   const std::string& name() const { return name_; }
   raw::MjData* ptr() { return d_; }
+  const raw::MjModel* model() const { return m_; }
 
  protected:
   int index_;
@@ -172,6 +176,7 @@ class MjDataGroupedViewsBase {
   raw::MjData* d_;
   const raw::MjModel* m_;
   pybind11::handle owner_;
+  mutable std::mutex lazy_init_mutex_;
 };
 
 #define XGROUP(MjDataGroupedViews, field, nfield, FIELD_XMACROS) \
@@ -212,6 +217,7 @@ class MjDataIndexer {
   pybind11::handle owner_;
   NameToIDMappings name_to_id_;
   IDToNameMappings id_to_name_;
+  mutable std::mutex lazy_init_mutex_;
 
   // Lazily instantiate a grouped views object when accessed from Python, but
   // cache it once made so that we can return the same one if requested again.

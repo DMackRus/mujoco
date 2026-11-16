@@ -13,12 +13,25 @@
    XMLreference
    programming/index.rst
    APIreference/index.rst
+
+.. toctree::
+   :hidden:
+
+   Studio <studio/index.rst>
    python
-   MJX <mjx>
+   MuJoCo XLA <mjx>
+   MuJoCo Warp <mjwarp/index.rst>
    unity
+   OpenUSD/index.rst
+
+.. toctree::
+   :hidden:
+
    models
    changelog
 
 
 .. sidebar-links::
    :github:
+
+   mujoco.org <https://mujoco.org>

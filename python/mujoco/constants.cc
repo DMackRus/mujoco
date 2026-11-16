@@ -15,7 +15,9 @@
 #include <utility>
 #include <vector>
 #include <mujoco/mjmodel.h>
+#include <mujoco/mjtype.h>
 #include <mujoco/mjvisualize.h>
+#include <mujoco/mjxmacro.h>
 #include <mujoco/mujoco.h>
 #include <pybind11/cast.h>
 #include <pybind11/pybind11.h>
@@ -47,7 +49,7 @@ py::tuple MakeTuple(const char* (&strings)[N][3]) {
   return std::move(result);
 }
 
-PYBIND11_MODULE(_constants, pymodule) {
+PYBIND11_MODULE(_constants, pymodule, pybind11::mod_gil_not_used()) {
   #define X(var) pymodule.attr(#var) = var
 
   // from mjmodel.h
@@ -57,13 +59,20 @@ PYBIND11_MODULE(_constants, pymodule) {
   X(mjMINIMP);
   X(mjMAXIMP);
   X(mjMAXCONPAIR);
+  X(mjMAXTREEDEPTH);
+  X(mjMAXFLEXNODES);
+  X(mjMINAWAKE);
   X(mjNEQDATA);
   X(mjNDYN);
   X(mjNGAIN);
   X(mjNBIAS);
+  X(mjNFLUID);
   X(mjNREF);
   X(mjNIMP);
+  X(mjNSENS);
   X(mjNSOLVER);
+  X(mjNISLAND);
+  X(mjNPOLY);
 
   // from mjvisualize.h
   X(mjNGROUP);
@@ -76,8 +85,13 @@ PYBIND11_MODULE(_constants, pymodule) {
   // from mujoco.h
   X(mjVERSION_HEADER);
 
-  // from mjtnum.h
+  // from mjtype.h
   X(mjMINVAL);
+
+  // from mjxmacro.h
+  X(mjSC_IN);
+  X(mjSC_OUT);
+  X(mjSC_INOUT);
 
   #undef X
   pymodule.attr("mjDISABLESTRING") = MakeTuple(mjDISABLESTRING);
@@ -87,6 +101,7 @@ PYBIND11_MODULE(_constants, pymodule) {
   pymodule.attr("mjFRAMESTRING") = MakeTuple(mjFRAMESTRING);
   pymodule.attr("mjVISSTRING") = MakeTuple(mjVISSTRING);
   pymodule.attr("mjRNDSTRING") = MakeTuple(mjRNDSTRING);
+  pymodule.attr("MJTNUM_BYTES") = sizeof(mjtNum);
 }
 }  // namespace
 }  // namespace mujoco::python

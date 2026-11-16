@@ -17,6 +17,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Xml;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace Mujoco {
 // API for importing Mujoco XML files into Unity scenes.
@@ -28,13 +29,32 @@ public class MjcfImporter {
   public static Material DefaultMujocoMaterial {
     get {
       if (_DefaultMujocoMaterial == null) {
-        _DefaultMujocoMaterial = new Material(Shader.Find("Standard"));
+        _DefaultMujocoMaterial = new Material(GetLitShader());
       }
 
       return _DefaultMujocoMaterial;
     }
     set {
       _DefaultMujocoMaterial = value;
+    }
+  }
+
+  // There are many configurations that need to be changed in a material to reliably render as
+  // transparent, so we use template materials to ensure all default settings are correct.
+  public static string SemiTransparentMaterialName {
+    get {
+      string defaultName = "mujoco_semitransparent_template";
+      var pipeline = GraphicsSettings.currentRenderPipeline ?? GraphicsSettings.defaultRenderPipeline;
+      if (pipeline != null) {
+        string pipelineType = pipeline.GetType().ToString();
+
+        if (pipelineType.Contains("HighDefinition")) {
+          defaultName = "mujoco_semitransparent_template_hd";
+        } else if (pipelineType.Contains("Universal")) {
+          defaultName = "mujoco_semitransparent_template_urp";
+        }
+      }
+      return defaultName;
     }
   }
 
@@ -215,10 +235,12 @@ public class MjcfImporter {
 
   protected virtual void ParseGeom(GameObject parentObject, XmlElement child) {
     var gameObject = CreateGameObjectWithUniqueName<MjGeom>(parentObject, child);
-    // Add the visuals.
-    gameObject.AddComponent<MjMeshFilter>();
-    var renderer = gameObject.AddComponent<MeshRenderer>();
-    renderer.sharedMaterial = DefaultMujocoMaterial;
+    if (gameObject.GetComponent<MjGeom>().ShapeType != MjShapeComponent.ShapeTypes.HField) {
+      // Add the visuals.
+      gameObject.AddComponent<MjMeshFilter>();
+      var renderer = gameObject.AddComponent<MeshRenderer>();
+      renderer.sharedMaterial = DefaultMujocoMaterial;
+    }
   }
 
   private GameObject CreateGameObjectInParent(string name, GameObject parentObject) {
@@ -446,5 +468,23 @@ public class MjcfImporter {
     camera.nearClipPlane = 0.01f;  // MuJoCo default, TODO(etom): get from visual/map/znear
     return gameObject;
   }
+
+  public static Shader GetLitShader() {
+    string shaderName = "Standard";
+
+    var pipeline = GraphicsSettings.currentRenderPipeline ?? GraphicsSettings.defaultRenderPipeline;
+    if (pipeline != null) {
+      string pipelineType = pipeline.GetType().ToString();
+
+      if (pipelineType.Contains("Universal")) {
+        shaderName = "Universal Render Pipeline/Lit";
+      } else if (pipelineType.Contains("HighDefinition")) {
+        shaderName = "HDRP/Lit";
+      }
+    }
+    Shader shader = Shader.Find(shaderName) ?? Shader.Find("Standard");
+    return shader;
+  }
 }
+
 }

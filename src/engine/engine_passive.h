@@ -28,6 +28,11 @@ extern "C" {
 // all passive forces
 MJAPI void mj_passive(const mjModel* m, mjData* d);
 
+// adhesion forces: constant attraction along the normals of adhesive contacts
+int mj_adhesion(const mjModel* m, mjData* d);
+
+
+
 
 //------------------------- fluid models -----------------------------------------------------------
 
@@ -60,16 +65,6 @@ void readFluidGeomInteraction(const mjtNum* geom_fluid_coefs,
                               mjtNum* magnus_lift_coef,
                               mjtNum virtual_mass[3],
                               mjtNum virtual_inertia[3]);
-
-void writeFluidGeomInteraction (mjtNum* geom_fluid_coefs,
-                                const mjtNum* geom_fluid_coef,
-                                const mjtNum* blunt_drag_coef,
-                                const mjtNum* slender_drag_coef,
-                                const mjtNum* ang_drag_coef,
-                                const mjtNum* kutta_lift_coef,
-                                const mjtNum* magnus_lift_coef,
-                                const mjtNum virtual_mass[3],
-                                const mjtNum virtual_inertia[3]);
 
 
 #ifdef __cplusplus

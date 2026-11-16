@@ -19,6 +19,8 @@
 #include <utility>
 #include <vector>
 
+#include <mujoco/mujoco.h>
+#include "gil.h"
 #include "indexers.h"
 #include "raw.h"
 #include "util/crossplatform.h"
@@ -80,29 +82,48 @@ IDToName MakeIDToName(int count, IntPtr name_offsets, CharPtr names) {
 //   shape: The shape of the array as defined by MuJoCo. If MjSize corresponds
 //     to a ragged or indirect field, the shape may be prepended by additional
 //     dimensions as appropriate, e.g. if MjSize is nv then the view gains an
-//     additional dimension of the size len(qvel) of the particular joint.
+//     additional dimension of the size len(qvel) of the particular joint. For
+//     actuator fields (nu, nout), that dimension is added only if the actuator
+//     does not have exactly one control or output, so that the views of
+//     single-input, single-output actuators keep the shape of a single row.
 //   m: Used for dereferencing MjSize.
 //   owner: The base object whose lifetime is tied to the returned array.
 template <auto MjSize, typename T>
 py::array_t<T> MakeArray(T* base_ptr, int index, std::vector<int>&& shape,
                          const raw::MjModel& m, py::handle owner) {
-  int offset;
+  // number of elements in one row of a ragged field, whose address counts rows
+  mjtSize rowsize = 1;
+  for (int s : shape) {
+    rowsize *= s;
+  }
+  mjtSize offset;
   if (MjSize == &raw::MjModel::nq) {
-    offset = m.jnt_qposadr[index];
+    offset = m.jnt_qposadr[index] * rowsize;
     shape.insert(
         shape.begin(),
-        ((index < m.njnt-1) ? m.jnt_qposadr[index+1] : m.nq) - offset);
+        ((index < m.njnt-1) ? m.jnt_qposadr[index+1] : m.nq) -
+            m.jnt_qposadr[index]);
   } else if (MjSize == &raw::MjModel::nv) {
-    offset = m.jnt_dofadr[index];
+    offset = m.jnt_dofadr[index] * rowsize;
     shape.insert(
         shape.begin(),
-        ((index < m.njnt-1) ? m.jnt_dofadr[index+1] : m.nv) - offset);
+        ((index < m.njnt-1) ? m.jnt_dofadr[index+1] : m.nv) -
+            m.jnt_dofadr[index]);
+  } else if (MjSize == &raw::MjModel::nu || MjSize == &raw::MjModel::nout) {
+    bool ctrl = MjSize == &raw::MjModel::nu;
+    offset = (ctrl ? m.actuator_ctrladr : m.actuator_outadr)[index] * rowsize;
+    int num = (ctrl ? m.actuator_ctrlnum : m.actuator_outnum)[index];
+    if (num != 1 || shape.empty()) {
+      shape.insert(shape.begin(), num);
+    }
   } else if (MjSize == &raw::MjModel::nhfielddata) {
     offset = m.hfield_adr[index];
     shape.insert(shape.begin(), m.hfield_ncol[index]);
     shape.insert(shape.begin(), m.hfield_nrow[index]);
   } else if (MjSize == &raw::MjModel::ntexdata) {
-    offset = m.tex_adr[index];
+    // a by-reference texture (tex_adr == -1) has no pixels: an empty view
+    offset = m.tex_adr[index] < 0 ? 0 : m.tex_adr[index];
+    shape.insert(shape.begin(), m.tex_nchannel[index]);
     shape.insert(shape.begin(), m.tex_width[index]);
     shape.insert(shape.begin(), m.tex_height[index]);
   } else if (MjSize == &raw::MjModel::nsensordata) {
@@ -114,6 +135,27 @@ py::array_t<T> MakeArray(T* base_ptr, int index, std::vector<int>&& shape,
   } else if (MjSize == &raw::MjModel::ntupledata) {
     offset = m.tuple_adr[index];
     shape.insert(shape.begin(), m.tuple_size[index]);
+  } else if (MjSize == &raw::MjModel::nplastic) {
+    if (shape.empty()) {
+      int adr = m.jnt_plasticadr[index];
+      offset = adr < 0 ? 0 : adr;
+      int num = adr < 0 ? 0
+                        : (((index < m.njnt - 1) ? m.jnt_qposadr[index + 1]
+                                                 : m.nq) -
+                           m.jnt_qposadr[index]);
+      shape.push_back(num);
+    } else {
+      int adr = m.tendon_plasticadr[index];
+      offset = adr < 0 ? 0 : adr;
+      if (adr < 0) {
+        shape[0] = 0;
+      }
+    }
+  } else if (MjSize == &raw::MjModel::nJten) {
+    int adr = m.ten_J_rowadr[index];
+    offset = adr < 0 ? 0 : adr;
+    int num = adr < 0 ? 0 : m.ten_J_rownnz[index];
+    shape.push_back(num);
   } else {
     // Do not return a NumPy array with shape () since these aren't very nice
     // to work with. Instead, always return singleton arrays with shape (1,).
@@ -147,7 +189,7 @@ NameToIDMappings::NameToIDMappings(const raw::MjModel& m)
       exclude(MakeNameToID(m.nexclude, m.name_excludeadr, m.names)),
       eq(MakeNameToID(m.neq, m.name_eqadr, m.names)),
       tendon(MakeNameToID(m.ntendon, m.name_tendonadr, m.names)),
-      actuator(MakeNameToID(m.nu, m.name_actuatoradr, m.names)),
+      actuator(MakeNameToID(m.nactuator, m.name_actuatoradr, m.names)),
       sensor(MakeNameToID(m.nsensor, m.name_sensoradr, m.names)),
       numeric(MakeNameToID(m.nnumeric, m.name_numericadr, m.names)),
       text(MakeNameToID(m.ntext, m.name_textadr, m.names)),
@@ -170,7 +212,7 @@ IDToNameMappings::IDToNameMappings(const raw::MjModel& m)
       exclude(MakeIDToName(m.nexclude, m.name_excludeadr, m.names)),
       eq(MakeIDToName(m.neq, m.name_eqadr, m.names)),
       tendon(MakeIDToName(m.ntendon, m.name_tendonadr, m.names)),
-      actuator(MakeIDToName(m.nu, m.name_actuatoradr, m.names)),
+      actuator(MakeIDToName(m.nactuator, m.name_actuatoradr, m.names)),
       sensor(MakeIDToName(m.nsensor, m.name_sensoradr, m.names)),
       numeric(MakeIDToName(m.nnumeric, m.name_numericadr, m.names)),
       text(MakeIDToName(m.ntext, m.name_textadr, m.names)),
@@ -183,7 +225,7 @@ MjModelIndexer::MjModelIndexer(raw::MjModel* m, py::handle owner)
       name_to_id_(*m),
       id_to_name_(*m)
 #define XGROUP(MjModelFieldGroupedViews, field, nfield, FIELD_XMACROS) \
-  , field##_(m->nfield, std::nullopt)
+  , field##_(m->nfield)
       MJMODEL_VIEW_GROUPS
 #undef XGROUP
 {}
@@ -193,6 +235,7 @@ MjModelIndexer::MjModelIndexer(raw::MjModel* m, py::handle owner)
     if (i >= field##_.size() || i < 0) {                               \
       throw py::index_error(IndexErrorMessage(i, field##_.size()));    \
     }                                                                  \
+    MutexLockIfGilDisabled lock(lazy_init_mutex_);                     \
     auto& indexer = field##_[i];                                       \
     if (!indexer.has_value()) {                                        \
       const std::string& name = id_to_name_.field[i];                  \
@@ -223,7 +266,7 @@ MjDataIndexer::MjDataIndexer(raw::MjData* d, const raw::MjModel* m,
       name_to_id_(*m),
       id_to_name_(*m)
 #define XGROUP(MjDataGroupedViews, field, nfield, FIELD_XMACROS) \
-  , field##_(m->nfield, std::nullopt)
+  , field##_(m->nfield)
       MJDATA_VIEW_GROUPS
 #undef XGROUP
 {}
@@ -233,6 +276,7 @@ MjDataIndexer::MjDataIndexer(raw::MjData* d, const raw::MjModel* m,
     if (i >= field##_.size() || i < 0) {                            \
       throw py::index_error(IndexErrorMessage(i, field##_.size())); \
     }                                                               \
+    MutexLockIfGilDisabled lock(lazy_init_mutex_);                  \
     auto& indexer = field##_[i];                                    \
     if (!indexer.has_value()) {                                     \
       const std::string& name = id_to_name_.field[i];               \
@@ -260,7 +304,7 @@ MJDATA_VIEW_GROUPS
     if constexpr (std::string_view(#dim) == std::string_view("1")) { \
       return {};                                                     \
     } else {                                                         \
-      return {n};                                                    \
+      return {(int)n};                                               \
     }                                                                \
   }()                                                                \
   MUJOCO_DIAG_UNIGNORE_UNUSED_LAMBDA_CAPTURE
@@ -269,6 +313,7 @@ MJDATA_VIEW_GROUPS
 #define MJ_M(n) m_->n
 #define X(type, prefix, var, dim0, dim1)                            \
   py::array_t<type> XGROUP::var() {                                 \
+    MutexLockIfGilDisabled lock(lazy_init_mutex_);                  \
     if (!var##_.has_value()) {                                      \
       var##_.emplace(MakeArray<&raw::MjModel::dim0>(                \
           m_->prefix##var, index_, MAKE_SHAPE(dim1), *m_, owner_)); \
@@ -360,6 +405,7 @@ MJMODEL_KEYFRAME
 #define MJ_M(n) m_->n
 #define X(type, prefix, var, dim0, dim1)                            \
   py::array_t<type> XGROUP::var() {                               \
+    MutexLockIfGilDisabled lock(lazy_init_mutex_);                  \
     if (!var##_.has_value()) {                                      \
       var##_.emplace(MakeArray<&raw::MjModel::dim0>(              \
           d_->prefix##var, index_, MAKE_SHAPE(dim1), *m_, owner_)); \

@@ -40,11 +40,11 @@ EXT_PREFIX = 'mujoco.'
 
 def get_long_description():
   """Creates a long description for the package from bundled markdown files."""
-  current_dir = os.path.dirname('__file__')
-  with open(os.path.join(current_dir, 'README.md')) as f:
+  current_dir = os.path.abspath(os.path.dirname(__file__))
+  with open(os.path.join(current_dir, 'README.md'), encoding='utf-8') as f:
     description = f.read()
   try:
-    with open(os.path.join(current_dir, 'LICENSES_THIRD_PARTY.md')) as f:
+    with open(os.path.join(current_dir, 'LICENSES_THIRD_PARTY.md'), encoding='utf-8') as f:
       description = f'{description}\n{f.read()}'
   except FileNotFoundError:
     pass
@@ -101,15 +101,15 @@ def tokenize_quoted_substr(input_string, quote_char, placeholders=None):
   placeholders = placeholders if placeholders is not None else dict()
   prev_end = -1
   for start, end in start_and_end(quote_positions):
-    output_string += input_string[prev_end+1:start]
+    output_string += input_string[prev_end + 1 : start]
     while True:
       placeholder = ''.join(random.choices(string.ascii_lowercase, k=5))
       if placeholder not in input_string and placeholder not in output_string:
         break
     output_string += placeholder
-    placeholders[placeholder] = input_string[start+1:end]
+    placeholders[placeholder] = input_string[start + 1 : end]
     prev_end = end
-  output_string += input_string[prev_end+1:]
+  output_string += input_string[prev_end + 1 :]
 
   return output_string, placeholders
 
@@ -145,15 +145,16 @@ class BuildCMakeExtension(build_ext.build_ext):
   """Uses CMake to build extensions."""
 
   def run(self):
-    self._is_apple = (platform.system() == 'Darwin')
-    (self._mujoco_library_path,
-     self._mujoco_include_path,
-     self._mujoco_plugins_path,
-     self._mujoco_framework_path) = self._find_mujoco()
+    self._is_apple = platform.system() == 'Darwin'
+    (
+        self._mujoco_library_path,
+        self._mujoco_include_path,
+        self._mujoco_plugins_path,
+        self._mujoco_framework_path,
+    ) = self._find_mujoco()
     self._configure_cmake()
     for ext in self.extensions:
       assert ext.name.startswith(EXT_PREFIX)
-      assert '.' not in ext.name[len(EXT_PREFIX):]
       self.build_extension(ext)
     self._copy_external_libraries()
     self._copy_mujoco_headers()
@@ -163,20 +164,22 @@ class BuildCMakeExtension(build_ext.build_ext):
 
   def _find_mujoco(self):
     if MUJOCO_PATH not in os.environ:
-      raise RuntimeError(
-          f'{MUJOCO_PATH} environment variable is not set')
+      raise RuntimeError(f'{MUJOCO_PATH} environment variable is not set')
     if MUJOCO_PLUGIN_PATH not in os.environ:
       raise RuntimeError(
-          f'{MUJOCO_PLUGIN_PATH} environment variable is not set')
+          f'{MUJOCO_PLUGIN_PATH} environment variable is not set'
+      )
     library_path = None
     include_path = None
     plugin_path = os.environ[MUJOCO_PLUGIN_PATH]
     for directory, subdirs, filenames in os.walk(os.environ[MUJOCO_PATH]):
       if self._is_apple and 'mujoco.framework' in subdirs:
-        return (os.path.join(directory, 'mujoco.framework/Versions/A'),
-                os.path.join(directory, 'mujoco.framework/Headers'),
-                plugin_path,
-                directory)
+        return (
+            os.path.join(directory, 'mujoco.framework/Versions/A'),
+            os.path.join(directory, 'mujoco.framework/Headers'),
+            plugin_path,
+            directory,
+        )
       if fnmatch.filter(filenames, get_mujoco_lib_pattern()):
         library_path = directory
       if os.path.exists(os.path.join(directory, 'mujoco/mujoco.h')):
@@ -190,65 +193,112 @@ class BuildCMakeExtension(build_ext.build_ext):
     for directory, _, filenames in os.walk(os.environ[MUJOCO_PATH]):
       for pattern in get_external_lib_patterns():
         for filename in fnmatch.filter(filenames, pattern):
-          shutil.copyfile(os.path.join(directory, filename),
-                          os.path.join(dst, filename))
+          shutil.copyfile(
+              os.path.join(directory, filename), os.path.join(dst, filename)
+          )
 
   def _copy_plugin_libraries(self):
     dst = os.path.join(
         os.path.dirname(self.get_ext_fullpath(self.extensions[0].name)),
-        'plugin')
-    os.makedirs(dst)
+        'plugin',
+    )
+    os.makedirs(dst, exist_ok=True)
     for directory, _, filenames in os.walk(self._mujoco_plugins_path):
       for pattern in get_plugin_lib_patterns():
         for filename in fnmatch.filter(filenames, pattern):
-          shutil.copyfile(os.path.join(directory, filename),
-                          os.path.join(dst, filename))
+          if filename in (
+              'libusd_decoder_plugin.so',
+              'libusd_decoder_plugin.dylib',
+              'usd_decoder_plugin.dll',
+          ):
+            continue
+          shutil.copyfile(
+              os.path.join(directory, filename), os.path.join(dst, filename)
+          )
 
   def _copy_mujoco_headers(self):
     dst = os.path.join(
         os.path.dirname(self.get_ext_fullpath(self.extensions[0].name)),
-        'include/mujoco')
-    os.makedirs(dst)
+        'include/mujoco',
+    )
+    os.makedirs(dst, exist_ok=True)
     for directory, _, filenames in os.walk(self._mujoco_include_path):
+      rel_dir = os.path.relpath(directory, self._mujoco_include_path)
+
+      # Only copy top-level MuJoCo C headers (under '.' for macOS framework or
+      # 'mujoco' for standard include layout).
+      if rel_dir not in ('.', 'mujoco'):
+        continue
+
       for filename in fnmatch.filter(filenames, '*.h'):
-        shutil.copyfile(os.path.join(directory, filename),
-                        os.path.join(dst, filename))
+        rel_file_path = os.path.relpath(
+            os.path.join(directory, filename), self._mujoco_include_path
+        )
+
+        # Skip third-party files in the root include path (for framework case)
+        if rel_dir == '.' and not (
+            filename == 'mujoco.h' or filename.startswith('mj')
+        ):
+          continue
+
+        # Reconstruct destination path preserving structure
+        # Strip leading 'mujoco/' if present to avoid duplicate 'mujoco/mujoco/'
+        if rel_file_path.startswith('mujoco' + os.sep):
+          target_rel_path = rel_file_path[len('mujoco' + os.sep) :]
+        else:
+          target_rel_path = rel_file_path
+
+        target_dst = os.path.join(dst, target_rel_path)
+        os.makedirs(os.path.dirname(target_dst), exist_ok=True)
+        shutil.copyfile(os.path.join(directory, filename), target_dst)
 
   def _copy_mjpython(self):
     src_dir = os.path.join(os.path.dirname(__file__), 'mujoco/mjpython')
     dst_contents_dir = os.path.join(
         os.path.dirname(self.get_ext_fullpath(self.extensions[0].name)),
-        'MuJoCo_(mjpython).app/Contents')
-    os.makedirs(dst_contents_dir)
-    shutil.copyfile(os.path.join(src_dir, 'Info.plist'),
-                    os.path.join(dst_contents_dir, 'Info.plist'))
+        'MuJoCo_(mjpython).app/Contents',
+    )
+    os.makedirs(dst_contents_dir, exist_ok=True)
+    shutil.copyfile(
+        os.path.join(src_dir, 'Info.plist'),
+        os.path.join(dst_contents_dir, 'Info.plist'),
+    )
 
     dst_bin_dir = os.path.join(dst_contents_dir, 'MacOS')
-    os.makedirs(dst_bin_dir)
-    shutil.copyfile(os.path.join(self.build_temp, 'mjpython'),
-                    os.path.join(dst_bin_dir, 'mjpython'))
+    os.makedirs(dst_bin_dir, exist_ok=True)
+    shutil.copyfile(
+        os.path.join(self.build_temp, 'mjpython'),
+        os.path.join(dst_bin_dir, 'mjpython'),
+    )
     os.chmod(os.path.join(dst_bin_dir, 'mjpython'), 0o755)
 
     dst_resources_dir = os.path.join(dst_contents_dir, 'Resources')
-    os.makedirs(dst_resources_dir)
-    shutil.copyfile(os.path.join(src_dir, 'mjpython.icns'),
-                    os.path.join(dst_resources_dir, 'mjpython.icns'))
+    os.makedirs(dst_resources_dir, exist_ok=True)
+    shutil.copyfile(
+        os.path.join(src_dir, 'mjpython.icns'),
+        os.path.join(dst_resources_dir, 'mjpython.icns'),
+    )
 
   def _configure_cmake(self):
     """Check for CMake."""
     cmake = os.environ.get(MUJOCO_CMAKE, 'cmake')
     build_cfg = 'Debug' if self.debug else 'Release'
     cmake_module_path = os.path.join(
-        os.path.dirname(__file__), 'mujoco', 'cmake')
+        os.path.dirname(__file__), 'mujoco', 'cmake'
+    )
     cmake_args = [
         f'-DPython3_ROOT_DIR:PATH={sys.prefix}',
         f'-DPython3_EXECUTABLE:STRING={sys.executable}',
         f'-DCMAKE_MODULE_PATH:PATH={cmake_module_path}',
         f'-DCMAKE_BUILD_TYPE:STRING={build_cfg}',
         f'-DCMAKE_LIBRARY_OUTPUT_DIRECTORY:PATH={self.build_temp}',
-        f'-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL={"OFF" if self.debug else "ON"}',
+        (
+            f'-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL={"OFF" if self.debug else "ON"}'
+        ),
         '-DCMAKE_Fortran_COMPILER:STRING=',
         '-DBUILD_TESTING:BOOL=OFF',
+        '-DMUJOCO_PYTHON_BUILD_CORE:BOOL=ON',
+        '-DMUJOCO_PYTHON_BUILD_STUDIO:BOOL=OFF',
     ]
 
     if self._mujoco_framework_path is not None:
@@ -284,19 +334,33 @@ class BuildCMakeExtension(build_ext.build_ext):
     for arg in cmake_args:
       print(f'    {arg}')
     subprocess.check_call(
-        [cmake] + cmake_args +
-        [os.path.join(os.path.dirname(__file__), 'mujoco')],
-        cwd=self.build_temp)
+        [cmake]
+        + cmake_args
+        + [os.path.join(os.path.dirname(__file__), 'mujoco')],
+        cwd=self.build_temp,
+    )
 
     print('Building all extensions with CMake')
     subprocess.check_call(
         [cmake, '--build', '.', f'-j{os.cpu_count()}', '--config', build_cfg],
-        cwd=self.build_temp)
+        cwd=self.build_temp,
+    )
 
   def build_extension(self, ext):
     dest_path = self.get_ext_fullpath(ext.name)
-    build_path = os.path.join(self.build_temp, os.path.basename(dest_path))
-    shutil.copyfile(build_path, dest_path)
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+    # Reconstruct relative path from extension name to support nested extensions
+    rel_ext_name = ext.name[len(EXT_PREFIX):]
+    rel_path = rel_ext_name.replace('.', '/')
+    filename = os.path.basename(dest_path)
+    rel_dir = os.path.dirname(rel_path)
+
+    build_path = os.path.join(self.build_temp, rel_dir, filename)
+    if os.path.exists(build_path):
+      shutil.copyfile(build_path, dest_path)
+    else:
+      raise RuntimeError(f'Extension {ext.name} was not built by CMake.')
 
 
 class InstallScripts(install_scripts.install_scripts):
@@ -331,6 +395,7 @@ class InstallScripts(install_scripts.install_scripts):
       else:
         self.outfiles.append(oldfile)
 
+
 setuptools.setup(
     long_description=get_long_description(),
     long_description_content_type='text/markdown',
@@ -339,6 +404,7 @@ setuptools.setup(
         install_scripts=InstallScripts,
     ),
     ext_modules=[
+        CMakeExtension('mujoco._batch'),
         CMakeExtension('mujoco._callbacks'),
         CMakeExtension('mujoco._constants'),
         CMakeExtension('mujoco._enums'),
@@ -350,7 +416,7 @@ setuptools.setup(
         CMakeExtension('mujoco._specs'),
         CMakeExtension('mujoco._structs'),
     ],
-    scripts=[
-        'mujoco/mjpython/mjpython.py'
-    ] if platform.system() == 'Darwin' else [],
+    scripts=['mujoco/mjpython/mjpython.py']
+    if platform.system() == 'Darwin'
+    else [],
 )

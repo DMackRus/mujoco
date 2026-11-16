@@ -13,20 +13,38 @@
 # limitations under the License.
 
 mujoco_test(xml_api_test)
-target_link_libraries(xml_api_test fixture gmock)
 
-mujoco_test(xml_native_reader_test)
-target_link_libraries(xml_native_reader_test fixture gmock)
+mujoco_test(xml_urdf_test)
+
+mujoco_test(
+  xml_native_reader_test
+  ADDITIONAL_LINK_LIBRARIES compare_model
+)
+
+mujoco_test(schema_defaults_test)
+
+mujoco_test(xml_utils_test)
 
 mujoco_test(
   xml_native_writer_test
+  ADDITIONAL_LINK_LIBRARIES
+  absl::flat_hash_set
+  compare_model
   PROPERTIES
   ENVIRONMENT
-  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:elasticity>"
+  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:actuator>"
 )
-target_link_libraries(
-  xml_native_writer_test
-  fixture
-  gmock
+add_dependencies(xml_native_writer_test actuator sensor sdf_plugin)
+
+mujoco_test(
+  xml_write_read_test
+  ADDITIONAL_LINK_LIBRARIES
   absl::flat_hash_set
+  compare_model
+  PROPERTIES
+  ENVIRONMENT
+  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:actuator>"
 )
+add_dependencies(xml_write_read_test actuator sensor sdf_plugin)
+
+add_subdirectory(mjz)

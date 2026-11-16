@@ -143,11 +143,10 @@ void MjrContextWrapper::Free() {
   // mjr_freeContext is safe to call multiple times.
   InterceptMjErrors(mjr_freeContext)(ptr_);
 }
-
 }  // namespace _impl
 
 namespace {
-PYBIND11_MODULE(_render, pymodule) {
+PYBIND11_MODULE(_render, pymodule, pybind11::mod_gil_not_used()) {
   namespace py = ::pybind11;
   namespace traits = python_traits;
 
@@ -157,25 +156,6 @@ PYBIND11_MODULE(_render, pymodule) {
   // Import the _structs module so that pybind11 knows about Python bindings
   // for MjWrapper types and therefore generates prettier docstrings.
   py::module::import("mujoco._structs");
-
-  py::class_<raw::MjrRect> mjrRect(pymodule, "MjrRect");
-  mjrRect.def(py::init([](int left, int bottom, int width, int height) {
-                return raw::MjrRect{left, bottom, width, height};
-              }),
-              py::arg("left"), py::arg("bottom"), py::arg("width"),
-              py::arg("height"));
-  mjrRect.def("__copy__",
-              [](const raw::MjrRect& other) { return raw::MjrRect(other); });
-  mjrRect.def("__deepcopy__", [](const raw::MjrRect& other, py::dict) {
-    return raw::MjrRect(other);
-  });
-  DefineStructFunctions(mjrRect);
-#define X(var) mjrRect.def_readwrite(#var, &raw::MjrRect::var)
-  X(left);
-  X(bottom);
-  X(width);
-  X(height);
-#undef X
 
   py::class_<MjrContextWrapper> mjrContext(pymodule, "MjrContext");
   mjrContext.def(py::init<>());
@@ -260,10 +240,38 @@ PYBIND11_MODULE(_render, pymodule) {
   X(charWidthBig);
 #undef X
 
+  // ==================== MJRRENDERERINFO ======================================
+  py::class_<raw::MjrRendererInfo> mjrRendererInfo(pymodule, "MjrRendererInfo");
+  mjrRendererInfo.def(py::init([]() {
+    raw::MjrRendererInfo info;
+    mjr_defaultRendererInfo(&info);
+    return info;
+  }));
+  mjrRendererInfo.def("__copy__", [](const raw::MjrRendererInfo& other) {
+    return raw::MjrRendererInfo(other);
+  });
+  mjrRendererInfo.def("__deepcopy__",
+                      [](const raw::MjrRendererInfo& other, py::dict) {
+                        return raw::MjrRendererInfo(other);
+  });
+  DefineStructFunctions(mjrRendererInfo);
+  mjrRendererInfo.def_property_readonly("renderer",
+                                        [](const raw::MjrRendererInfo& info) {
+                                          return info.renderer ? info.renderer
+                                                               : "";
+                                        });
+  mjrRendererInfo.def_property_readonly("backend",
+                                        [](const raw::MjrRendererInfo& info) {
+                                          return info.backend ? info.backend
+                                                              : "";
+                                        });
+
   using EigenUnsignedCharVectorX = Eigen::Vector<unsigned char, Eigen::Dynamic>;
   using EigenFloatVectorX = Eigen::Vector<float, Eigen::Dynamic>;
 
   // Skipped: mjr_defaultContext (have MjrContext.__init__)
+  Def<traits::mjr_defaultRendererInfo>(pymodule);
+  Def<traits::mjr_getRendererInfo>(pymodule);
   // Skipped: mjr_makeContext (have MjrContext.__init__)
   Def<traits::mjr_changeFont>(pymodule);
   Def<traits::mjr_addAux>(pymodule);
@@ -274,10 +282,39 @@ PYBIND11_MODULE(_render, pymodule) {
   Def<traits::mjr_uploadHField>(pymodule);
   Def<traits::mjr_restoreBuffer>(pymodule);
   Def<traits::mjr_setBuffer>(pymodule);
+  auto validate_pixel_buffers = [](std::optional<std::uint64_t> rgb_size,
+                                   std::optional<std::uint64_t> depth_size,
+                                   const raw::MjrRect& viewport) {
+    if (viewport.width < 0 || viewport.height < 0) {
+      throw py::value_error("viewport width and height must be non-negative");
+    }
+    const std::uint64_t npixels = static_cast<std::uint64_t>(viewport.width) *
+                                  static_cast<std::uint64_t>(viewport.height);
+    if (rgb_size.has_value() && *rgb_size < 3 * npixels) {
+      throw py::value_error("rgb buffer is too small for viewport");
+    }
+    if (depth_size.has_value() && *depth_size < npixels) {
+      throw py::value_error("depth buffer is too small for viewport");
+    }
+  };
+
   DefWithGil<traits::mjr_readPixels>(
-      pymodule, [](std::optional<py::array_t<std::uint8_t>> rgb,
-                   std::optional<py::array_t<float>> depth,
-                   const raw::MjrRect* viewport, const raw::MjrContext* con) {
+      pymodule, [validate_pixel_buffers](
+                    std::optional<py::array_t<std::uint8_t>> rgb,
+                    std::optional<py::array_t<float>> depth,
+                    const raw::MjrRect* viewport, const raw::MjrContext* con) {
+        if (rgb.has_value() && !(rgb->flags() & py::array::c_style)) {
+          throw py::value_error("rgb buffer must be C-contiguous");
+        }
+        if (depth.has_value() && !(depth->flags() & py::array::c_style)) {
+          throw py::value_error("depth buffer must be C-contiguous");
+        }
+        validate_pixel_buffers(
+            rgb.has_value() ? std::optional<std::uint64_t>(rgb->size())
+                            : std::nullopt,
+            depth.has_value() ? std::optional<std::uint64_t>(depth->size())
+                              : std::nullopt,
+            *viewport);
         std::uint8_t* const rgb_data =
             rgb.has_value() ? rgb->mutable_data() : nullptr;
         float* const depth_data =
@@ -290,9 +327,16 @@ PYBIND11_MODULE(_render, pymodule) {
       });
   Def<traits::mjr_drawPixels>(
       pymodule,
-      [](std::optional<Eigen::Ref<const EigenUnsignedCharVectorX>> rgb,
-         std::optional<Eigen::Ref<const EigenFloatVectorX>> depth,
-         const raw::MjrRect* viewport, const raw::MjrContext* con) {
+      [validate_pixel_buffers](
+          std::optional<Eigen::Ref<const EigenUnsignedCharVectorX>> rgb,
+          std::optional<Eigen::Ref<const EigenFloatVectorX>> depth,
+          const raw::MjrRect* viewport, const raw::MjrContext* con) {
+        validate_pixel_buffers(
+            rgb.has_value() ? std::optional<std::uint64_t>(rgb->size())
+                            : std::nullopt,
+            depth.has_value() ? std::optional<std::uint64_t>(depth->size())
+                              : std::nullopt,
+            *viewport);
         return InterceptMjErrors(::mjr_drawPixels)(
             rgb.has_value() ? rgb->data() : nullptr,
             depth.has_value() ? depth->data() : nullptr, *viewport, con);

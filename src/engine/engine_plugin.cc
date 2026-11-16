@@ -34,6 +34,7 @@ extern "C" {
 #else
   #include <dirent.h>
   #include <dlfcn.h>
+  #include <sys/stat.h>
 #endif
 }
 
@@ -60,6 +61,16 @@ int strklen(const char* s) {
     }
   }
   return -1;
+}
+
+// return filename extension
+std::string getext(std::string_view filename) {
+  size_t dot = filename.find_last_of('.');
+
+  if (dot == std::string::npos) {
+    return "";
+  }
+  return std::string(filename.substr(dot, filename.size() - dot));
 }
 
 // copy a null-terminated string into a new heap-allocated char array managed by a unique_ptr
@@ -114,6 +125,57 @@ const char* PluginAttrSeek(const mjModel* m, int plugin_id, int attrib_id) {
   }
   return ptr;
 }
+
+template <typename Fn>
+void ForEachPipeSeparated(std::string_view str, Fn&& fn) {
+  while (!str.empty()) {
+    std::size_t pos = str.find('|');
+    std::string_view item = (pos == std::string_view::npos) ? str : str.substr(0, pos);
+    if (!item.empty()) {
+      fn(std::string(item).c_str());
+    }
+    if (pos == std::string_view::npos) {
+      break;
+    }
+    str.remove_prefix(pos + 1);
+  }
+}
+
+struct ArchiveTag {};
+
+// resource provider helpers
+std::string_view ProviderKey(const mjpResourceProvider& provider) {
+  return std::string_view(provider.prefix, strklen(provider.prefix));
+}
+
+bool ProviderEqual(const mjpResourceProvider& p1, const mjpResourceProvider& p2) {
+  return (mujoco::CaseInsensitiveEqual(p1.prefix, p2.prefix) &&
+          p1.open == p2.open &&
+          p1.read == p2.read &&
+          p1.close == p2.close &&
+          p1.mount == p2.mount &&
+          p1.unmount == p2.unmount &&
+          p1.modified == p2.modified &&
+          p1.write == p2.write &&
+          p1.data == p2.data);
+}
+
+bool ProviderCopy(mjpResourceProvider& dst, const mjpResourceProvider& src, char (&err)[512]) {
+  std::unique_ptr<char[]> prefix = CopyName(src.prefix);
+  if (!prefix) {
+    if (strklen(src.prefix) == -1) {
+      std::snprintf(err, sizeof(err),
+                    "provider->prefix length exceeds the maximum limit of %d", kMaxNameLength);
+    } else {
+      std::snprintf(err, sizeof(err), "failed to allocate memory for resource provider prefix");
+    }
+    return false;
+  }
+
+  dst = src;
+  dst.prefix = prefix.release();
+  return true;
+}
 }  // namespace
 
 template <>
@@ -147,7 +209,7 @@ bool GlobalTable<mjpPlugin>::ObjectEqual(const mjpPlugin& plugin1, const mjpPlug
     if (plugin1.attributes[i] && !plugin2.attributes[i]) {
       return false;
     }
-    if (plugin1.attributes[i] && !plugin2.attributes[i]) {
+    if (!plugin1.attributes[i] && plugin2.attributes[i]) {
       return false;
     }
     if (plugin1.attributes[i] && plugin2.attributes[i] &&
@@ -182,7 +244,7 @@ bool GlobalTable<mjpPlugin>::CopyObject(mjpPlugin& dst, const mjpPlugin& src, Er
 
   // check and copy plugin attributes
   std::unique_ptr<std::unique_ptr<char[]>[]> attributes_list;
-  if (src.nattribute) {
+  if (src.nattribute > 0) {
     attributes_list.reset(new(std::nothrow) std::unique_ptr<char[]>[src.nattribute]);
     if (!attributes_list) {
       std::snprintf(err, sizeof(err), "failed to allocate memory for plugin attribute list");
@@ -206,11 +268,11 @@ bool GlobalTable<mjpPlugin>::CopyObject(mjpPlugin& dst, const mjpPlugin& src, Er
 
   // release the attribute names from unique_ptr into a plain array
   const char** attributes = nullptr;
-  if (src.nattribute) {
+  if (src.nattribute > 0) {
     attributes = new(std::nothrow) const char*[src.nattribute];
     if (!attributes) {
       std::snprintf(err, sizeof(err), "failed to allocate memory for plugin attribute array");
-      return -1;
+      return false;
     }
     for (int i = 0; i < src.nattribute; ++i) {
       attributes[i] = attributes_list[i].release();
@@ -224,6 +286,9 @@ bool GlobalTable<mjpPlugin>::CopyObject(mjpPlugin& dst, const mjpPlugin& src, Er
   return true;
 }
 
+
+
+// Standard URI resource provider table specialization
 template <>
 const char* GlobalTable<mjpResourceProvider>::HumanReadableTypeName() {
   return "resource provider";
@@ -231,39 +296,203 @@ const char* GlobalTable<mjpResourceProvider>::HumanReadableTypeName() {
 
 template <>
 std::string_view GlobalTable<mjpResourceProvider>::ObjectKey(const mjpResourceProvider& plugin) {
-  return std::string_view(plugin.prefix, strklen(plugin.prefix));
+  return ProviderKey(plugin);
 }
 
 // check if two resource providers are identical
 template <>
 bool GlobalTable<mjpResourceProvider>::ObjectEqual(const mjpResourceProvider& p1, const mjpResourceProvider& p2) {
-  return (CaseInsensitiveEqual(p1.prefix, p2.prefix) &&
-          p1.open == p2.open &&
-          p1.read == p2.read &&
-          p1.close == p2.close &&
-          p1.getdir == p2.getdir &&
-          p1.modified == p2.modified &&
-          p1.data == p2.data);
+  return ProviderEqual(p1, p2);
 }
 
 template <>
 bool GlobalTable<mjpResourceProvider>::CopyObject(mjpResourceProvider& dst, const mjpResourceProvider& src, ErrorMessage& err) {
-  // copy prefix
-  std::unique_ptr<char[]> prefix = CopyName(src.prefix);
-  if (!prefix) {
-    if (strklen(src.prefix) == -1) {
-      std::snprintf(err, sizeof(err),
-                    "provider->prefix length exceeds the maximum limit of %d", kMaxNameLength);
-    } else {
-      std::snprintf(err, sizeof(err), "failed to allocate memory for resource provider prefix");
+  return ProviderCopy(dst, src, err);
+}
+
+// Archive resource provider table specialization
+template <>
+const char* GlobalTable<mjpResourceProvider, ArchiveTag>::HumanReadableTypeName() {
+  return "archive resource provider";
+}
+
+template <>
+std::string_view GlobalTable<mjpResourceProvider, ArchiveTag>::ObjectKey(const mjpResourceProvider& plugin) {
+  return ProviderKey(plugin);
+}
+
+template <>
+bool GlobalTable<mjpResourceProvider, ArchiveTag>::ObjectEqual(const mjpResourceProvider& p1, const mjpResourceProvider& p2) {
+  return ProviderEqual(p1, p2);
+}
+
+template <>
+bool GlobalTable<mjpResourceProvider, ArchiveTag>::CopyObject(mjpResourceProvider& dst, const mjpResourceProvider& src, ErrorMessage& err) {
+  return ProviderCopy(dst, src, err);
+}
+
+template <>
+const char* GlobalTable<mjpDecoder>::HumanReadableTypeName() {
+  return "resource decoder";
+}
+
+template <>
+std::string_view GlobalTable<mjpDecoder>::ObjectKey(const mjpDecoder& decoder) {
+  // When registering decoders, if the user provides both a content type and an extension we add two
+  // entries to the table. One with content_type set and extension unset, and one with the opposite.
+  // This means that within a vector, we will only ever have either content_type or extension.
+  if (decoder.content_type) {
+    if (int len = strklen(decoder.content_type); len != -1) {
+      return std::string_view(decoder.content_type, len);
     }
-    return false;
+  }
+  return std::string_view(decoder.extension, strklen(decoder.extension));
+}
+
+// return true if two resource providers are identical
+template <>
+bool GlobalTable<mjpDecoder>::ObjectEqual(const mjpDecoder& d1, const mjpDecoder& d2) {
+  // check content_type
+  bool content_type_match = false;
+  if (d1.content_type && d2.content_type) {
+    content_type_match = CaseInsensitiveEqual(d1.content_type, d2.content_type);
+  } else {
+    content_type_match = (d1.content_type == d2.content_type);
   }
 
+  // check extension
+  bool extension_match = false;
+  if (d1.extension && d2.extension) {
+    extension_match = CaseInsensitiveEqual(d1.extension, d2.extension);
+  } else {
+    extension_match = (d1.extension == d2.extension);
+  }
+
+  return content_type_match && extension_match && d1.decode == d2.decode &&
+         d1.can_decode == d2.can_decode;
+}
+
+template <>
+bool GlobalTable<mjpDecoder>::CopyObject(mjpDecoder& dst, const mjpDecoder& src, ErrorMessage& err) {
+  // Just a list of pointers so copy directly.
   dst = src;
-  dst.prefix = prefix.release();
+  dst.content_type = nullptr;
+  dst.extension = nullptr;
+
+  if (src.content_type) {
+    std::unique_ptr<char[]> content_type = CopyName(src.content_type);
+    if (!content_type) {
+      if (strklen(src.content_type) == -1) {
+        std::snprintf(err, sizeof(err),
+                      "decoder->content_type length exceeds the maximum limit of %d", kMaxNameLength);
+      } else {
+        std::snprintf(err, sizeof(err), "failed to allocate memory for decoder content_type");
+      }
+      return false;
+    }
+
+    dst.content_type = content_type.release();
+  }
+
+  if (src.extension) {
+    std::unique_ptr<char[]> extension = CopyName(src.extension);
+    if (!extension) {
+      if (strklen(src.extension) == -1) {
+        std::snprintf(err, sizeof(err),
+                      "decoder->extension length exceeds the maximum limit of %d", kMaxNameLength);
+      } else {
+        std::snprintf(err, sizeof(err), "failed to allocate memory for decoder extension");
+      }
+      return false;
+    }
+
+    dst.extension = extension.release();
+  }
+
   return true;
 }
+
+template <>
+const char* GlobalTable<mjpEncoder>::HumanReadableTypeName() {
+  return "resource encoder";
+}
+
+template <>
+std::string_view GlobalTable<mjpEncoder>::ObjectKey(const mjpEncoder& encoder) {
+  if (encoder.content_type) {
+    if (int len = strklen(encoder.content_type); len != -1) {
+      return std::string_view(encoder.content_type, len);
+    }
+  }
+  return std::string_view(encoder.extension, strklen(encoder.extension));
+}
+
+template <>
+bool GlobalTable<mjpEncoder>::ObjectEqual(const mjpEncoder& e1,
+                                          const mjpEncoder& e2) {
+  bool content_type_match = false;
+  if (e1.content_type && e2.content_type) {
+    content_type_match = CaseInsensitiveEqual(e1.content_type, e2.content_type);
+  } else {
+    content_type_match = (e1.content_type == e2.content_type);
+  }
+
+  bool extension_match = false;
+  if (e1.extension && e2.extension) {
+    extension_match = CaseInsensitiveEqual(e1.extension, e2.extension);
+  } else {
+    extension_match = (e1.extension == e2.extension);
+  }
+
+  return content_type_match && extension_match
+         && e1.encode == e2.encode
+         && e1.close_resource == e2.close_resource;
+}
+
+template <>
+bool GlobalTable<mjpEncoder>::CopyObject(mjpEncoder& dst, const mjpEncoder& src, ErrorMessage& err) {
+  dst = src;
+  dst.content_type = nullptr;
+  dst.extension = nullptr;
+
+  if (src.content_type) {
+    std::unique_ptr<char[]> content_type = CopyName(src.content_type);
+    if (!content_type) {
+      if (strklen(src.content_type) == -1) {
+        std::snprintf(
+            err, sizeof(err),
+            "encoder->content_type length exceeds the maximum limit of %d",
+            kMaxNameLength);
+      } else {
+        std::snprintf(err, sizeof(err), "failed to allocate memory for encoder content_type");
+      }
+      return false;
+    }
+
+    dst.content_type = content_type.release();
+  }
+
+  if (src.extension) {
+    std::unique_ptr<char[]> extension = CopyName(src.extension);
+    if (!extension) {
+      if (strklen(src.extension) == -1) {
+        std::snprintf(
+            err, sizeof(err),
+            "encoder->extension length exceeds the maximum limit of %d",
+            kMaxNameLength);
+      } else {
+        std::snprintf(err, sizeof(err), "failed to allocate memory for encoder extension");
+      }
+      return false;
+    }
+
+    dst.extension = extension.release();
+  }
+
+  return true;
+}
+
+
 
 // globally register a plugin (thread-safe), return new slot id
 int mjp_registerPlugin(const mjpPlugin* plugin) {
@@ -328,12 +557,12 @@ const char* mj_getPluginConfig(const mjModel* m, int plugin_id, const char* attr
 }
 
 // set default resource provider definition
-void mjp_defaultResourceProvider(mjpResourceProvider* provider) {
+void mjp_defaultProvider(mjpResourceProvider* provider) {
   std::memset(provider, 0, sizeof(*provider));
 }
 
 // globally register a resource provider (thread-safe), return new slot id
-int mjp_registerResourceProvider(const mjpResourceProvider* provider) {
+int mjp_registerProvider(const mjpResourceProvider* provider) {
   // check if prefix is valid URI scheme format
   if (!IsValidURISchemeFormat(provider->prefix)) {
     mju_warning("provider->prefix is '%s' which is not a valid URI scheme format",
@@ -350,12 +579,12 @@ int mjp_registerResourceProvider(const mjpResourceProvider* provider) {
 }
 
 // return the number of globally registered resource providers
-int mjp_resourceProviderCount() {
+int mjp_providerCount() {
   return GlobalTable<mjpResourceProvider>::GetSingleton().count();
 }
 
 // look up a resource provider that matches its prefix against the given resource scheme
-const mjpResourceProvider* mjp_getResourceProvider(const char* resource_name) {
+const mjpResourceProvider* mjp_findProvider(const char* resource_name) {
   if (!resource_name || !resource_name[0]) {
     return nullptr;
   }
@@ -377,26 +606,241 @@ const mjpResourceProvider* mjp_getResourceProvider(const char* resource_name) {
 }
 
 // look up a resource provider by slot number
-const mjpResourceProvider* mjp_getResourceProviderAtSlot(int slot) {
+const mjpResourceProvider* mjp_getProviderAtSlot(int slot) {
   // shift slot to be zero-indexed
   return GlobalTable<mjpResourceProvider>::GetSingleton().GetAtSlot(slot - 1);
 }
 
-// load plugins from a dynamic library
-void mj_loadPluginLibrary(const char* path) {
+// register a resource decoder
+void mjp_registerDecoder(const mjpDecoder* decoder) {
+  if (!decoder->decode || !decoder->can_decode) {
+    mju_warning("decoder must provide decode and can_decode callbacks.");
+    return;
+  }
+
+  if (!decoder->content_type && !decoder->extension) {
+    mju_warning("decoder must provide content_type and/or extensions.");
+    return;
+  }
+
+  mjpDecoder decoder_copy = *decoder;
+
+  // Register with content_type
+  if (decoder->content_type) {
+    decoder_copy.extension = nullptr;
+    GlobalTable<mjpDecoder>::GetSingleton().AppendIfUnique(decoder_copy);
+  }
+
+  // Register with extensions
+  if (decoder->extension) {
+    decoder_copy.content_type = nullptr;
+    ForEachPipeSeparated(decoder->extension, [&](const char* ext) {
+      decoder_copy.extension = ext;
+      GlobalTable<mjpDecoder>::GetSingleton().AppendIfUnique(decoder_copy);
+    });
+  }
+}
+
+// set default resource decoder definition
+void mjp_defaultDecoder(mjpDecoder* decoder) {
+  std::memset(decoder, 0, sizeof(*decoder));
+}
+
+// find a decoder that can process a given resource and content_type
+const mjpDecoder* mjp_findDecoder(const mjResource* resource, const char* content_type) {
+  auto extension = getext(resource->name ? resource->name : "");
+  bool has_content_type = content_type && strklen(content_type) > 0;
+  if (!has_content_type && extension.empty()) {
+    mju_warning("Must provide extension or content_type to mjp_findDecoder.");
+    return nullptr;
+  }
+
+  if (has_content_type) {
+    auto* decoder = GlobalTable<mjpDecoder>::GetSingleton().GetByKey(content_type, nullptr);
+    if (decoder && decoder->can_decode(resource)) {
+      return decoder;
+    }
+  }
+
+  if (!extension.empty()) {
+    auto* decoder = GlobalTable<mjpDecoder>::GetSingleton().GetByKey(extension.c_str(), nullptr);
+    if (decoder && decoder->can_decode(resource)) {
+      return decoder;
+    }
+  }
+
+  return nullptr;
+}
+
+void mjp_registerEncoder(const mjpEncoder* encoder) {
+  if (!encoder->encode) {
+    mju_warning("encoder must provide an encode callback.");
+    return;
+  }
+
+  if (!encoder->close_resource) {
+    mju_warning("encoder must provide a close_resource callback.");
+    return;
+  }
+
+  if (!encoder->content_type && !encoder->extension) {
+    mju_warning("encoder must provide content_type and/or extensions.");
+    return;
+  }
+
+  mjpEncoder encoder_copy = *encoder;
+
+  if (encoder->content_type) {
+    encoder_copy.extension = nullptr;
+    GlobalTable<mjpEncoder>::GetSingleton().AppendIfUnique(encoder_copy);
+  }
+
+  if (encoder->extension) {
+    encoder_copy.content_type = nullptr;
+    ForEachPipeSeparated(encoder->extension, [&](const char* ext) {
+      encoder_copy.extension = ext;
+      GlobalTable<mjpEncoder>::GetSingleton().AppendIfUnique(encoder_copy);
+    });
+  }
+}
+
+void mjp_defaultEncoder(mjpEncoder* encoder) {
+  std::memset(encoder, 0, sizeof(*encoder));
+}
+
+const mjpEncoder* mjp_findEncoder(const char* filename,
+                                  const char* content_type) {
+  auto extension = getext(filename ? filename : "");
+  bool has_content_type = content_type && strklen(content_type) > 0;
+  if (!has_content_type && extension.empty()) {
+    mju_warning("Must provide extension or content_type to mjp_findEncoder.");
+    return nullptr;
+  }
+
+  if (has_content_type) {
+    auto* encoder =
+        GlobalTable<mjpEncoder>::GetSingleton().GetByKey(content_type, nullptr);
+    if (encoder) {
+      return encoder;
+    }
+  }
+
+  if (!extension.empty()) {
+    auto* encoder = GlobalTable<mjpEncoder>::GetSingleton().GetByKey(
+        extension.c_str(), nullptr);
+    if (encoder) {
+      return encoder;
+    }
+  }
+
+  return nullptr;
+}
+
+// registers an archive resource provider
+void mjp_registerArchiveProvider(const mjpResourceProvider* provider) {
+  if (!provider || !provider->open || !provider->read || !provider->close) {
+    mju_error("archive provider must provide open, read, and close callbacks.");
+    return;
+  }
+
+  if (!provider->prefix) {
+    mju_error("archive provider must provide prefix (file extensions).");
+    return;
+  }
+
+  char ext_buf[kMaxNameLength + 1];
+  ForEachPipeSeparated(provider->prefix, [&](std::string_view ext) {
+    if (ext.size() <= kMaxNameLength) {
+      std::memcpy(ext_buf, ext.data(), ext.size());
+      ext_buf[ext.size()] = '\0';
+      mjpResourceProvider provider_copy = *provider;
+      provider_copy.prefix = ext_buf;
+      GlobalTable<mjpResourceProvider, ArchiveTag>::GetSingleton().AppendIfUnique(provider_copy);
+    }
+  });
+}
+
+// find an archive resource provider that matches a given resource or content type
+const mjpResourceProvider* mjp_findArchiveProvider(const char* resource_name) {
+  std::string extension = resource_name ? getext(resource_name) : "";
+  if (extension.empty()) {
+    return nullptr;
+  }
+
+  return GlobalTable<mjpResourceProvider, ArchiveTag>::GetSingleton().GetByKey(
+      extension.c_str(), nullptr);
+}
+
+// return the number of globally registered archive resource providers
+int mjp_archiveProviderCount() {
+  return GlobalTable<mjpResourceProvider, ArchiveTag>::GetSingleton().count();
+}
+
+
 #if defined(_WIN32) || defined(__CYGWIN__)
-  LoadLibraryA(path);
+// convert UTF-8 string to wide string
+static std::wstring Utf8ToWide(std::string_view str) {
+  if (str.empty()) {
+    return L"";
+  }
+  int wlen = MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, str.data(), static_cast<int>(str.size()), nullptr, 0);
+  if (wlen <= 0) {
+    return L"";
+  }
+  std::wstring wstr(wlen, L'\0');
+  MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, str.data(), static_cast<int>(str.size()), wstr.data(), wlen);
+  return wstr;
+}
+
+// convert wide string to UTF-8 string
+static std::string WideToUtf8(std::wstring_view wstr) {
+  if (wstr.empty()) {
+    return "";
+  }
+  int len = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wstr.data(),
+                                static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+  if (len <= 0) {
+    return "";
+  }
+  std::string str(len, '\0');
+  WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wstr.data(),
+                      static_cast<int>(wstr.size()), str.data(), len, nullptr, nullptr);
+  return str;
+}
+#endif
+
+// load plugins from a dynamic library, return false and write error message on failure
+static bool LoadPluginLibrary(const char* path, char* error, int error_sz) {
+#if defined(_WIN32) || defined(__CYGWIN__)
+  std::wstring wpath = path ? Utf8ToWide(path) : std::wstring();
+  if (wpath.empty() || !LoadLibraryW(wpath.c_str())) {
+    std::snprintf(error, error_sz, "Error loading plugin library '%s': error %lu",
+                  path ? path : "", static_cast<unsigned long>(GetLastError()));
+    return false;
+  }
 #else
   void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (!handle) {
-    const char* error = dlerror();
-    if (error) {
-      mju_error("Error loading plugin library '%s': %s\n", path, error);
+    const char* dlerr = dlerror();
+    if (dlerr) {
+      std::snprintf(error, error_sz, "Error loading plugin library '%s': %s", path, dlerr);
     } else {
-      mju_error("Unknown error loading plugin library '%s'\n", path);
+      std::snprintf(error, error_sz, "Unknown error loading plugin library '%s'", path);
     }
+    return false;
   }
 #endif
+  return true;
+}
+
+// load plugins from a dynamic library
+void mj_loadPluginLibrary(const char* path) {
+  char error[1024];
+  if (!LoadPluginLibrary(path, error, sizeof(error))) {
+    mju_error("%s", error);
+  }
 }
 
 // scan a directory and load all dynamic libraries
@@ -406,13 +850,22 @@ void mj_loadAllPluginLibraries(const char* directory,
                                         const std::string& dso_path) {
     int nplugin_before;
     int nplugin_after;
+    bool loaded;
+    char error[1024];
 
     auto& plugin_table = GlobalTable<mjpPlugin>::GetSingleton();
     {
       auto lock = plugin_table.LockExclusively();
       nplugin_before = mjp_pluginCount();
-      mj_loadPluginLibrary(dso_path.c_str());
+      loaded = LoadPluginLibrary(dso_path.c_str(), error, sizeof(error));
       nplugin_after = mjp_pluginCount();
+    }
+
+    // skip a library that cannot be loaded (e.g. missing dependencies or wrong architecture) with
+    // a warning, so that one bad library in the directory does not abort the application
+    if (!loaded) {
+      mju_warning("%s", error);
+      return;
     }
 
     if (callback) {
@@ -422,24 +875,33 @@ void mj_loadAllPluginLibraries(const char* directory,
     }
   };
 
+  if (!directory || !directory[0]) {
+    return;
+  }
+
   // define platform-specific strings
 #if defined(_WIN32) || defined(__CYGWIN__)
   const std::string sep = "\\";
-  WIN32_FIND_DATAA find_data;
-  HANDLE hfile = FindFirstFileA(
-      (directory + sep + "*.dll").c_str(), &find_data);
-  if (!hfile) {
+  WIN32_FIND_DATAW find_data;
+  std::wstring wpattern = Utf8ToWide(directory + sep + "*.dll");
+  if (wpattern.empty()) {
+    return;
+  }
+  HANDLE hfile = FindFirstFileW(wpattern.c_str(), &find_data);
+  if (hfile == INVALID_HANDLE_VALUE) {
     return;
   }
 
   // go through each file in the directory
   bool keep_going = true;
   while (keep_going) {
-    const std::string name(find_data.cFileName);
-    // load the library and check for plugins
-    const std::string dso_path = directory + sep + name;
-    load_dso_and_call_callback(name.c_str(), dso_path.c_str());
-    keep_going = FindNextFileA(hfile, &find_data);
+    const std::string name = WideToUtf8(find_data.cFileName);
+    if (!name.empty()) {
+      // load the library and check for plugins
+      const std::string dso_path = directory + sep + name;
+      load_dso_and_call_callback(name, dso_path);
+    }
+    keep_going = FindNextFileW(hfile, &find_data);
   }
   FindClose(hfile);
 #else
@@ -457,14 +919,15 @@ void mj_loadAllPluginLibraries(const char* directory,
 
   // go through each entry in the directory
   for (struct dirent* dp; (dp = readdir(dirp));) {
-    // only look at regular files (skip symlinks, pipes, directories, etc.)
-    if (dp->d_type == DT_REG) {
-      const std::string name(dp->d_name);
-      if (name.size() > dso_suffix.size() &&
-          name.substr(name.size() - dso_suffix.size()) == dso_suffix) {
-        // load the library
-        const std::string dso_path = directory + sep + name;
-        load_dso_and_call_callback(name.c_str(), dso_path.c_str());
+    const std::string name(dp->d_name);
+    if (name.size() > dso_suffix.size() &&
+        name.substr(name.size() - dso_suffix.size()) == dso_suffix) {
+      const std::string dso_path = directory + sep + name;
+
+      // use stat to resolve symlinks and check that the target is a regular file
+      struct stat file_stat;
+      if (stat(dso_path.c_str(), &file_stat) == 0 && S_ISREG(file_stat.st_mode)) {
+        load_dso_and_call_callback(name, dso_path);
       }
     }
   }

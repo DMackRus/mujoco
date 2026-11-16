@@ -21,6 +21,7 @@
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjvisualize.h>
 #include "engine/engine_array_safety.h"
+#include "engine/engine_core_util.h"
 #include "engine/engine_util_errmem.h"
 #include "engine/engine_util_misc.h"
 
@@ -83,7 +84,7 @@ const char* mjVISSTRING[mjNVISFLAG][3] = {
   {"Perturb Force",   "0", "B"},
   {"Perturb Object",  "1", "O"},
   {"Contact Point",   "0", "C"},
-  {"Island",          "1", ""},   // TODO(b/295296178): turn off after islands are on by default.
+  {"Island",          "0", "N"},
   {"Contact Force",   "0", "F"},
   {"Contact Split",   "0", "P"},
   {"Transparent",     "0", "T"},
@@ -93,11 +94,10 @@ const char* mjVISSTRING[mjNVISFLAG][3] = {
   {"Static Body",     "1", "D"},
   {"Skin",            "1", ";"},
   {"Flex Vert",       "0", ""},
-  {"Flex Edge",       "0", ""},
+  {"Flex Edge",       "1", ""},
   {"Flex Face",       "0", ""},
   {"Flex Skin",       "1", ""},
   {"Body Tree",       "0", "`"},
-  {"Flex Tree",       "0", ""},
   {"Mesh Tree",       "0", "\\"},
   {"SDF iters",       "0", ""}
 };
@@ -105,16 +105,18 @@ const char* mjVISSTRING[mjNVISFLAG][3] = {
 
 // render options: {name, initial value, shortcut}
 const char* mjRNDSTRING[mjNRNDFLAG][3] = {
-  {"Shadow",      "1", "S"},
-  {"Wireframe",   "0", "W"},
-  {"Reflection",  "1", "R"},
-  {"Additive",    "0", "L"},
-  {"Skybox",      "1", "K"},
-  {"Fog",         "0", "G"},
-  {"Haze",        "1", "/"},
-  {"Segment",     "0", ","},
-  {"Id Color",    "0", ""},
-  {"Cull Face",   "1", ""}
+  {"Shadow",          "1", "S"},
+  {"Wireframe",       "0", "W"},
+  {"Reflection",      "1", "R"},
+  {"Additive",        "0", "L"},
+  {"Skybox",          "1", "K"},
+  {"Fog",             "0", "G"},
+  {"Haze",            "1", "/"},
+  {"Depth",           "0", ""},
+  {"Segment",         "0", ","},
+  {"Id Color",        "0", ""},
+  {"Cull Face",       "1", ""},
+  {"Post Processing", "1", ""}
 };
 
 
@@ -170,9 +172,9 @@ void mjv_makeScene(const mjModel* m, mjvScene* scn, int maxgeom) {
     // count max number of flex faces to be rendered (depending on vis options)
     int nface = 0;
     for (int f=0; f < nflex; f++) {
-      // 1D : 0
-      if (m->flex_dim[f] == 0) {
-        scn->flexfacenum[f] = 0;
+      // 1D : 12*elements for box section, 0 otherwise
+      if (m->flex_dim[f] == 1) {
+        scn->flexfacenum[f] = mj_rodBoxSize(m, f, NULL) ? 12*m->flex_elemnum[f] : 0;
       }
 
       // 2D: 2*fragments + 2*elements
@@ -276,7 +278,6 @@ void mjv_makeScene(const mjModel* m, mjvScene* scn, int maxgeom) {
 }
 
 
-
 // free abstract scene
 void mjv_freeScene(mjvScene* scn) {
   // free buffers allocated by mjv_makeScene
@@ -307,16 +308,16 @@ void mjv_freeScene(mjvScene* scn) {
 }
 
 
-
 // set default scene
 void mjv_defaultScene(mjvScene* scn) {
   memset(scn, 0, sizeof(mjvScene));
 }
 
 
-
 // set default visualization options
 void mjv_defaultOption(mjvOption* vopt) {
+  memset(vopt, 0, sizeof(mjvOption));
+
   vopt->label = mjLABEL_NONE;
   vopt->frame = mjFRAME_NONE;
 
@@ -340,7 +341,6 @@ void mjv_defaultOption(mjvOption* vopt) {
 }
 
 
-
 // set default camera
 void mjv_defaultCamera(mjvCamera* cam) {
   memset(cam, 0, sizeof(mjvCamera));
@@ -352,7 +352,6 @@ void mjv_defaultCamera(mjvCamera* cam) {
   cam->azimuth     = 90;
   cam->elevation   = -45;
 }
-
 
 
 // set default free camera
@@ -372,7 +371,6 @@ void mjv_defaultFreeCamera(const mjModel* m, mjvCamera* cam) {
 }
 
 
-
 // set default perturbation
 void mjv_defaultPerturb(mjvPerturb* pert) {
   memset(pert, 0, sizeof(mjvPerturb));
@@ -382,7 +380,6 @@ void mjv_defaultPerturb(mjvPerturb* pert) {
   pert->refquat[0] = 1;
   pert->scale = 1;
 }
-
 
 
 // predefined line colors
@@ -454,7 +451,6 @@ void mjv_defaultFigure(mjvFigure* fig) {
 }
 
 
-
 // compute rbound for mjvGeom
 float mjv_rbound(const mjvGeom* geom) {
   // model geom: return
@@ -464,7 +460,7 @@ float mjv_rbound(const mjvGeom* geom) {
 
   // compute rbound according to type
   const float* s = geom->size;
-  switch ((mjtMouse) geom->type) {
+  switch ((mjtGeom) geom->type) {
   case mjGEOM_SPHERE:
     return s[0];
 

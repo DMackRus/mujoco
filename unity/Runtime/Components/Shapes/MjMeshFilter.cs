@@ -41,20 +41,19 @@ public class MjMeshFilter : MonoBehaviour {
       return;
     }
 
-    _shapeChangeStamp = currentChangeStamp;
-    Tuple<Vector3[], int[]> meshData = _geom.BuildMesh();
-
-    if (meshData == null) {
-      throw new ArgumentException("Unsupported geom shape detected");
-    }
-
-    if(_geom.ShapeType == MjShapeComponent.ShapeTypes.Mesh) { 
+    if(_geom.ShapeType == MjShapeComponent.ShapeTypes.Mesh) {
       MjMeshShape meshShape = _geom.Shape as MjMeshShape;
       _meshFilter.sharedMesh = meshShape.Mesh;
       return;
     }
 
+    _shapeChangeStamp = currentChangeStamp;
+    Tuple<Vector3[], int[]> meshData = _geom.BuildMesh();
     DisposeCurrentMesh();
+    if (meshData == null) {
+      _meshFilter.sharedMesh = null;
+      return;
+    }
 
     var mesh = new Mesh();
     // Name this mesh to easily track resources in Unity analysis tools.
@@ -67,7 +66,6 @@ public class MjMeshFilter : MonoBehaviour {
       uvs[i] = new Vector2(mesh.vertices[i].x, mesh.vertices[i].z);
     }
     mesh.uv = uvs;
-    
     mesh.RecalculateNormals();
     mesh.RecalculateTangents();
   }

@@ -4,14 +4,14 @@ Extensions
 ----------
 
 This section describes MuJoCo's mechanisms for user-authored extensions. At present, extensibility is provided by
-via :ref:`engine plugins<exPlugin>` and :ref:`resource providers<exProvider>`.
+via :ref:`engine plugins<exPlugin>`, :ref:`decoders<exDecoder>`, and :ref:`resource providers<exProvider>`.
 
 .. _exPlugin:
 
 Engine plugins
 ~~~~~~~~~~~~~~
 
-Engine plugins, introduced in MuJoCo 2.3.0, allow user-defined logic to be inserted into various parts of MuJoCo's
+Engine plugins allow user-defined logic to be inserted into various parts of MuJoCo's
 computational pipeline. For example, custom sensor and actuator types can be implemented as plugins. Plugin features are
 referenced in the XML content of an MJCF model, allowing MJCF to remain an abstract physical description of
 a system even if the simulation requirements extend beyond MuJoCo's built-in capabilities.
@@ -195,6 +195,11 @@ create an arbitrary data structure that it requires to function and stores its p
 :ref:`mjData` that is being created. During :ref:`mj_deleteData`, MuJoCo calls the ``destroy`` callback from the same
 :ref:`mjpPlugin`, and the plugin is responsible for deallocating its internal resources associated with the instance.
 
+The ``init`` callback should report an invalid configuration by issuing a :ref:`mju_warning` and returning -1, upon
+which :ref:`mj_makeData` (and model compilation) fails. Plugin callbacks should not call :ref:`mju_error`: error
+handlers which do not return, like those of the Python bindings and the model compiler, skip the destructors of C++
+objects on the stack, in the plugin and in MuJoCo itself.
+
 When :ref:`mjData` is being copied via :ref:`mj_copyData`, MuJoCo will copy over the plugin state. However, the plugin
 code is responsible for setting up the plugin data for the newly copied :ref:`mjData`. To facilitate this, MuJoCo calls
 the ``copy`` callback from :ref:`mjpPlugin` for each plugin instance present.
@@ -230,12 +235,11 @@ troubleshoot issues with a model) can be statically linked into the application.
 :ref:`mjpPlugin` struct in the ``main`` function, then passing it to :ref:`mjp_registerPlugin` to be registered with
 MuJoCo.
 
-Generally, reusable plugins are expected to be packaged as dynamic libraries. A dynamic library containing one or more
-MuJoCo plugins should make sure that all plugins are registered when the library is loaded. In GCC-compatible compilers,
-this can be achieved by calling :ref:`mjp_registerPlugin` in a function that is declared with
-``__attribute__((constructor))``, while in MSVC this can be done in a DLL entry point (canonically known as
-``DllMain``). MuJoCo provides a convenience macro :ref:`mjPLUGIN_LIB_INIT` that expands to either of these
-constructs depending on the compiler used.
+Generally, reusable plugins are expected to be packaged as libraries and should be registered when the library is
+loaded. In GCC-compatible compilers, this can be achieved by calling :ref:`mjp_registerPlugin` in a function that is
+declared with ``__attribute__((constructor))``, while in MSVC this can be done by injecting code into the C runtime
+initialization. MuJoCo provides a convenience macro :ref:`mjPLUGIN_LIB_INIT` that expands to either of these constructs
+depending on the compiler used.
 
 Users of plugins that are delivered as dynamic libraries as described above can load the library using the function
 :ref:`mj_loadPluginLibrary`. This is the preferred way to load dynamic libraries containing MuJoCo plugins (rather than,
@@ -247,7 +251,8 @@ For applications that need to be able to load arbitrary user-provided MJCF model
 scan and load all dynamic libraries found without a specific directory. Users who bring along an MJCF that requires a
 plugin can then be instructed to place the requisite plugin libraries in the relevant directory. For example, this is
 what is done in the :ref:`saSimulate` interactive viewer application. The :ref:`mj_loadAllPluginLibraries` function is
-provided for this scan-and-load use case.
+provided for this scan-and-load use case. A library in the directory that fails to load, for example because one of its
+dependencies is missing, is skipped with a warning rather than aborting the application.
 
 .. _exWriting:
 
@@ -276,23 +281,13 @@ implement custom actuators, so far only a PID controller. See the `README
 <https://github.com/google-deepmind/mujoco/blob/main/plugin/actuator/README.md>`__ for details.
 
 
-elasticity
-""""""""""
-The plugins in the `elasticity/ <https://github.com/google-deepmind/mujoco/tree/main/plugin/elasticity>`__ directory are
-passive forces based on continuum mechanics for 1-dimensional and 2-dimensional bodies. The 1D model is invariant under
-rotations and captures the large deformation of elastic cables, decoupling twisting and bending strains. The 2D model is
-a suitable for computing the bending stiffness of thin elastic plates (i.e. shells having a flat stress-free
-configuration). In this case, the elastic energy is quadratic and therefore the stiffness matrix is constant. For more
-information, please see the `README
-<https://github.com/google-deepmind/mujoco/blob/main/plugin/elasticity/README.md>`__.
-
-
 sensor
 """"""
 The plugins in the `sensor/ <https://github.com/google-deepmind/mujoco/tree/main/plugin/sensor>`__ directory implement
 custom sensors. Currently the sole sensor plugin is the touch grid sensor, see the `README
 <https://github.com/google-deepmind/mujoco/blob/main/plugin/sensor/README.md>`__ for details.
 
+.. _exSDF:
 
 sdf
 """
@@ -313,7 +308,9 @@ gradient descent iterations is set using :ref:`sdf_iterations<option-sdf_iterati
 While *exact* SDFs---encoding the precise signed distance to the surface---are preferred, collisions are possible with
 any function whose value vanishes at the surface and grows monotonically away from it, with a negative sign in the
 interior. For such functions, it is still possible to find collisions, albeit with a possibly
-increased number of starting points.
+increased number of starting points. Note that if :math:`\|\nabla f\| \neq 1` near the zero level set, contact
+penetration depth is scaled accordingly and gradient-descent projection steps are distorted, so
+:math:`\|\nabla f\| \approx 1` near the surface is recommended.
 
 The ``sdf_distance`` method is called by the compiler to produce a visual mesh for rendering using the marching cubes
 algorithm implemented by `MarchingCubeCpp <https://github.com/aparis69/MarchingCubeCpp>`__.
@@ -337,14 +334,208 @@ For the sdf plugin, the following methods need to be specified
   Computes the axis-aligned bounding box in local coordinates. This volume is voxelized uniformly before the call to
   the marching cubes algorithm.
 
+.. _exDecoder:
+
+Decoders
+~~~~~~~~
+
+Decoder plugins extend asset loading capabilities beyond MJCF and URDF. They are :ref:`registered<mjPLUGIN_LIB_INIT>`
+similarly to other MuJoCo plugins.
+
+MuJoCo ships with two built-in decoders for common mesh formats:
+
+- **OBJ decoder** (``plugin/obj_decoder``) -- `Wavefront OBJ <https://en.wikipedia.org/wiki/Wavefront_.obj_file>`_.
+- **STL decoder** (``plugin/stl_decoder``) -- `STL <https://en.wikipedia.org/wiki/STL_(file_format)>`_.
+
+Additionally, we provide the following optional decoder plugins:
+
+- **USD decoder** (``plugin/usd_decoder``) -- `Universal Scene Description <https://openusd.org/release/index.html>`_.
+
+These plugins also serve as examples for how to write custom decoders. The obj decoder is perhaps the simplest to
+understand, while the USD decoder is more complex due to its support for entire scenes.
+
+.. _exDecoderInterface:
+
+Decoder interface
+^^^^^^^^^^^^^^^^^
+
+A decoder is described by the :ref:`mjpDecoder` struct, which has the following fields:
+
+``content_type``
+  A MIME-like content type string identifying the format. For example, ``"model/obj"``, or ``"model/stl"``.
+  When a mesh asset specifies a ``content-type`` attribute in MJCF, this string is used
+  to find the appropriate decoder.
+
+``extension``
+  A file extension string (including the dot) used for matching when no content type is specified. Multiple
+  extensions can be separated by pipes (`|`) for formats with multiple extensions such as ``.usd|.usda|.usdc|.usdz``.
+
+``can_decode``
+  A callback of type :ref:`mjfCanDecode` that determines whether the decoder can handle a given resource. This is
+  typically implemented by checking the file extension but may also check the file contents to differentiate between
+  formats. For example, URDF and MJCF files both have a ``.xml`` extension. Returns nonzero if the decoder can handle
+  the resource.
+
+``decode``
+  A callback of type :ref:`mjfDecode` that performs the actual decoding. It receives an :ref:`mjResource` and
+  returns a newly allocated :ref:`mjSpec` containing the decoded asset data. The caller takes
+  ownership of the returned spec and is responsible for freeing it with :ref:`mj_deleteSpec`. Returns ``NULL`` on
+  failure, in which case the decoder should write a human-readable reason into the ``error`` buffer of size
+  ``error_sz``, if ``error`` is not ``NULL``. This message is propagated to the user, e.g. via the ``error``
+  argument of :ref:`mj_parse` or as a compiler error for mesh assets. Non-fatal issues can be reported with
+  :ref:`mju_warning`. Decoders should not call :ref:`mju_error`, see :ref:`plugin state<exPluginState>`.
+
+When a decoder is invoked for a mesh asset, the compiler will reference the first mesh element in the spec returned
+by the ``decode`` callback.
+
+When a decoder is invoked for a model asset, the spec returned by the ``decode`` callback may contain any number of
+elements of any type.
+
+.. _exDecoderRegistration:
+
+Registration
+^^^^^^^^^^^^
+
+Decoders must be registered before they can be used. Registration is performed via
+:ref:`mjp_registerDecoder`. The :ref:`mjp_defaultDecoder` function initializes an :ref:`mjpDecoder` struct with
+default values. The :ref:`mjPLUGIN_LIB_INIT` macro is used to define the initialization function that registers the
+decoder when the library is loaded.
+
+.. code-block:: C
+
+   mjPLUGIN_LIB_INIT(my_format_decoder) {
+     mjpDecoder decoder;
+     mjp_defaultDecoder(&decoder);
+     decoder.content_type = "model/my-format";
+     decoder.extension = ".myf|.myfa|.myfc";
+     decoder.decode = MyDecode;
+     decoder.can_decode = MyCanDecode;
+     mjp_registerDecoder(&decoder);
+   }
+
+
+.. _exDecoderExample:
+
+Example
+^^^^^^^
+
+Below is a minimal decoder that reads a hypothetical binary mesh format:
+
+.. code-block:: C
+
+   #include <stdio.h>
+   #include <mujoco.h>
+
+   static mjSpec* MyDecode(mjResource* resource, const mjVFS* vfs, char* error, int error_sz) {
+     const void* bytes = NULL;
+     int nbytes = mju_readResource(resource, &bytes);
+     if (nbytes < 0) {
+       if (error) snprintf(error, error_sz, "failed to read resource '%s'", resource->name);
+       return NULL;
+     }
+
+     /* ... parse bytes into vertex/face arrays ... */
+
+     mjSpec* spec = mj_makeSpec();
+     mjsMesh* mesh = mjs_addMesh(spec, NULL);
+     mjs_setString(mesh->file, resource->name);
+     mjs_setFloat(mesh->uservert, vertices, nvert * 3);
+     mjs_setInt(mesh->userface, faces, nface * 3);
+     return spec;
+   }
+
+   static int MyCanDecode(const mjResource* resource) {
+     /* check file extension */
+     const char* name = resource->name;
+     int len = strlen(name);
+     return len > 4 && strcmp(name + len - 4, ".myf") == 0;
+   }
+
+   mjPLUGIN_LIB_INIT(my_format_decoder) {
+     mjpDecoder decoder;
+     mjp_defaultDecoder(&decoder);
+     decoder.content_type = "model/my-format";
+     decoder.extension = ".myf";
+     decoder.decode = MyDecode;
+     decoder.can_decode = MyCanDecode;
+     mjp_registerDecoder(&decoder);
+   }
+
+Once registered, the decoder is used automatically when MuJoCo encounters an asset with a matching file extension
+or content type:
+
+.. code-block:: xml
+
+   <asset>
+     <mesh file="my_mesh.myf"/>
+   </asset>
+
+
+.. _exEncoder:
+
+Encoders
+~~~~~~~~
+
+Encoder plugins extend asset serialization and model saving capabilities beyond native formats (XML, MJB, TXT).
+Encoders are :ref:`registered <mjPLUGIN_LIB_INIT>` similarly to other MuJoCo plugins.
+
+MuJoCo ships with a built-in Zip encoder for ``.mjz`` archives (``src/xml/mjz/mjz_encoder.cc``).
+
+.. _exEncoderInterface:
+
+Encoder interface
+^^^^^^^^^^^^^^^^^
+
+An encoder is described by the :ref:`mjpEncoder` struct, which has the following fields:
+
+``content_type``
+  A MIME-like content type string identifying the output format (e.g. ``"application/zip"``). When :ref:`mj_encode` is
+  called with an explicit ``content_type`` argument, this string is used to find the appropriate encoder.
+
+``extension``
+  A file extension string (including the dot) used for format matching when no content type is specified. Multiple
+  extensions can be separated by pipes (`|`) such as ``.mjz|.zip``.
+
+``encode``
+  A callback of type :ref:`mjfEncode` that performs the actual serialization. It receives an :ref:`mjSpec`, an
+  optional compiled :ref:`mjModel`, an optional :ref:`mjVFS`, and an output :ref:`mjResource`. Returns the number of
+  bytes written on success, or -1 on failure.
+
+``close_resource``
+  An optional callback that frees any memory allocated inside ``mjResource.data`` by the ``encode`` callback.
+
+.. _exEncoderRegistration:
+
+Registration
+^^^^^^^^^^^^
+
+Encoders must be registered before they can be used via :ref:`mj_encode`. Registration is performed via
+:ref:`mjp_registerEncoder`. The :ref:`mjp_defaultEncoder` function initializes an :ref:`mjpEncoder` struct with default
+values. The :ref:`mjPLUGIN_LIB_INIT` macro defines the initialization function that registers the encoder when the
+plugin library is loaded.
+
+.. code-block:: C
+
+   mjPLUGIN_LIB_INIT(my_format_encoder) {
+     mjpEncoder encoder;
+     mjp_defaultEncoder(&encoder);
+     encoder.content_type = "application/x-myformat";
+     encoder.extension = ".myf";
+     encoder.encode = MyEncode;
+     encoder.close_resource = MyCloseResource;
+     mjp_registerEncoder(&encoder);
+   }
+
+
 .. _exProvider:
 
 Resource providers
 ~~~~~~~~~~~~~~~~~~
 
-Resource providers extend MuJoCo to load assets (XML files, meshes, textures, and etc.) that don't necessarily come from
-the OS filesystem or the Virtual File System (:ref:`mjVFS`). For example, downloading assets from the Internet could be
-implemented as a resource provider. These extensions are handled abstractly in MuJoCo via the :ref:`mjResource` struct.
+Resource providers (:ref:`mjpResourceProvider`) extend MuJoCo to load assets (XML files, meshes, textures, and etc.)
+that don't necessarily come from the OS filesystem or the Virtual File System (:ref:`mjVFS`). For example, downloading
+assets from the Internet could be implemented as a resource provider. These extensions are handled abstractly in MuJoCo
+via the :ref:`mjResource` struct.
 
 .. _exProviderStructure:
 
@@ -352,8 +543,8 @@ Overview
 ^^^^^^^^
 
 Creating a new resource provider works by registering a :ref:`mjpResourceProvider` struct via
-:ref:`mjp_registerResourceProvider` in a global table. Once a resource provider is registered it can be used by all
-loading functions. The :ref:`mjpResourceProvider` struct stores three types of fields:
+:ref:`mjp_registerProvider` in a global table. Once a resource provider is registered it can be used by all loading
+functions. The :ref:`mjpResourceProvider` struct stores three types of fields:
 
 .. _Uniform Resource Identifier: https://en.wikipedia.org/wiki/Uniform_Resource_Identifier
 
@@ -443,16 +634,15 @@ Next we create the resource provider and register it with MuJoCo:
 
 .. code-block:: C
 
-   mjpResourceProvider resourceProvider = {
+   mjpResourceProvider provider = {
      .prefix = "data",
      .open = str_open_callback,
      .read = str_read_callback,
      .close = str_close_callback,
-     .getdir = NULL
    };
 
    // return positive number on success
-   if (!mjp_registerResourceProvider(&resourceProvider)) {
+   if (!mjp_registerProvider(&provider)) {
      // ...
      // return failure
    }
@@ -463,6 +653,6 @@ Now we can write assets as strings in our MJCF files:
 
    <asset>
      <texture name="grid" file="grid.png" type="2d"/>
-     <mesh content-type="model/obj" file="data:model/obj;base65,I215IG9iamVjdA0KdiAxIDAgMA0KdiAwIDEgMA0KdiAwIDAgMQ=="/>
+     <mesh content-type="model/obj" file="data:model/obj;base64,I215IG9iamVjdA0KdiAxIDAgMA0KdiAwIDEgMA0KdiAwIDAgMQ=="/>
      ...
    </asset>

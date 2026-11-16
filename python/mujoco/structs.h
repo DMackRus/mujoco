@@ -22,19 +22,21 @@
 #include <functional>
 #include <istream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <ostream>
 #include <sstream>
-#include <string_view>
-#include <unordered_map>
 #include <string>
+#include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include <absl/types/span.h>
-#include <mujoco/mujoco.h>
+#include "absl/types/span.h"
 #include <mujoco/mjxmacro.h>
+#include <mujoco/mujoco.h>
+#include "gil.h"
 #include "indexers.h"
 #include "raw.h"
 #include <pybind11/numpy.h>
@@ -44,6 +46,9 @@
 namespace py = ::pybind11;
 
 namespace mujoco::python {
+
+class MjVfs;
+
 namespace _impl {
 
 struct VfsAsset {
@@ -144,14 +149,22 @@ template <typename T>
 class StructListBase {
  public:
   StructListBase(T* ptr, int num, pybind11::handle owner, bool lazy = false)
-      : ptr_(ptr), num_(num), owner_(owner) {
+      : ptr_(ptr),
+        num_(num),
+        owner_(pybind11::reinterpret_borrow<pybind11::object>(owner)) {
     if (!lazy) {
       PopulateUpTo(size());
     }
   }
 
   StructListBase(const StructListBase& other) = delete;
-  StructListBase(StructListBase&& other) = default;
+  StructListBase(StructListBase&& other)
+      : ptr_(other.ptr_),
+        num_(other.num_),
+        stride_(other.stride_),
+        owner_(std::move(other.owner_)),
+        wrappers_(std::move(other.wrappers_)) {}
+  // populate_mutex_ is default-constructed (std::mutex is not movable)
 
   virtual ~StructListBase() = default;
 
@@ -167,38 +180,56 @@ class StructListBase {
     return num_;
   }
 
+  pybind11::ssize_t stride() const { return stride_; }
   T* get() const { return ptr_; }
   pybind11::handle owner() const { return owner_; }
 
  protected:
   void PopulateUpTo(int n) {
-    while (wrappers_.size() <= n) {
-      wrappers_.push_back(
-          std::make_shared<MjWrapper<T>>(&ptr_[wrappers_.size()], owner_));
+    if (n < 0) {
+      return;
+    }
+    MutexLockIfGilDisabled lock(populate_mutex_);
+    wrappers_.reserve(n + 1);
+    while (static_cast<int>(wrappers_.size()) <= n) {
+      wrappers_.push_back(std::make_shared<MjWrapper<T>>(
+          ptr_ + static_cast<pybind11::ssize_t>(wrappers_.size()) * stride_,
+          owner_));
     }
   }
 
   // Slicing
   StructListBase(StructListBase& other, pybind11::slice slice)
       : owner_(other.owner_) {
-    pybind11::size_t start, stop, step, slicelength;
+    pybind11::ssize_t start, stop, step, slicelength;
     if (!slice.compute(other.size(), &start, &stop, &step, &slicelength)) {
-      throw pybind11::index_error();
+      throw pybind11::error_already_set();
     }
-    other.PopulateUpTo(stop);
-    ptr_ = &other.ptr_[start];
-    for (int i = start; i < stop; i += step) {
-      wrappers_.push_back(other.wrappers_[i]);
+    num_ = slicelength;
+    stride_ = other.stride_ * step;
+    if (slicelength > 0) {
+      ptr_ = other.ptr_ + start * other.stride_;
+      pybind11::ssize_t max_idx =
+          step > 0 ? start + (slicelength - 1) * step : start;
+      other.PopulateUpTo(static_cast<int>(max_idx));
+      wrappers_.reserve(slicelength);
+      for (pybind11::ssize_t i = 0, idx = start; i < slicelength;
+           ++i, idx += step) {
+        wrappers_.push_back(other.wrappers_[idx]);
+      }
+    } else {
+      ptr_ = nullptr;
     }
-    num_ = wrappers_.size();
   }
 
   T* ptr_;
   int num_;
-  pybind11::handle owner_;
+  pybind11::ssize_t stride_ = 1;
+  pybind11::object owner_;
 
   // Using shared_ptr here so that we get identical Python objects when slicing.
   std::vector<std::shared_ptr<MjWrapper<T>>> wrappers_;
+  mutable std::mutex populate_mutex_;
 };
 
 template <typename T>
@@ -217,11 +248,13 @@ class MjWrapper<raw::MjOption> : public WrapperBase<raw::MjOption> {
   MjWrapper(raw::MjOption* ptr, pybind11::handle owner);
   ~MjWrapper() = default;
 
-  #define X(var, dim)                                            \
+  #define X(type, var, dim)
+  #define XVEC(type, var, dim)                                   \
     py_array_or_tuple_t<                                         \
         std::remove_all_extents_t<decltype(raw::MjOption::var)>> \
         var;
-  MJOPTION_VECTORS
+  MJOPTION_FIELDS
+  #undef XVEC
   #undef X
 };
 
@@ -241,13 +274,13 @@ class MjWrapper<raw::MjVisualHeadlight>
   MjWrapper(raw::MjVisualHeadlight* ptr, pybind11::handle owner);
   ~MjWrapper() = default;
 
-  #define X(var)                                                          \
+  #define X(type, var, dim)
+  #define XVEC(type, var, dim)                                            \
     py_array_or_tuple_t<                                                  \
         std::remove_all_extents_t<decltype(raw::MjVisualHeadlight::var)>> \
-        var
-  X(ambient);
-  X(diffuse);
-  X(specular);
+        var;
+  MJVISUAL_HEADLIGHT_FIELDS
+  #undef XVEC
   #undef X
 };
 
@@ -265,36 +298,12 @@ class MjWrapper<raw::MjVisualRgba> : public WrapperBase<raw::MjVisualRgba> {
   MjWrapper(raw::MjVisualRgba* ptr, pybind11::handle owner);
   ~MjWrapper() = default;
 
-  #define X(var)                                                     \
-    py_array_or_tuple_t<                                             \
-        std::remove_all_extents_t<decltype(raw::MjVisualRgba::var)>> \
-        var
-  X(fog);
-  X(haze);
-  X(force);
-  X(inertia);
-  X(joint);
-  X(actuator);
-  X(actuatornegative);
-  X(actuatorpositive);
-  X(com);
-  X(camera);
-  X(light);
-  X(selectpoint);
-  X(connect);
-  X(contactpoint);
-  X(contactforce);
-  X(contactfriction);
-  X(contacttorque);
-  X(contactgap);
-  X(rangefinder);
-  X(constraint);
-  X(slidercrank);
-  X(crankbroken);
-  X(frustum);
-  X(bv);
-  X(bvactive);
-  #undef X
+#define XVEC(type, var, dim)                                       \
+  py_array_or_tuple_t<                                             \
+      std::remove_all_extents_t<decltype(raw::MjVisualRgba::var)>> \
+      var;
+  MJVISUAL_RGBA_FIELDS
+#undef XVEC
 };
 
 using MjVisualRgbaWrapper = MjWrapper<raw::MjVisualRgba>;
@@ -330,11 +339,13 @@ class MjWrapper<raw::MjStatistic> : public WrapperBase<raw::MjStatistic> {
   MjWrapper(raw::MjStatistic* ptr, pybind11::handle owner);
   ~MjWrapper() = default;
 
-  #define X(var)                                                    \
+  #define X(var, dim)
+  #define XVEC(var, dim)                                            \
     py_array_or_tuple_t<                                            \
         std::remove_all_extents_t<decltype(raw::MjStatistic::var)>> \
-        var
-  X(center);
+        var;
+  MJSTATISTIC_FIELDS
+  #undef XVEC
   #undef X
 };
 
@@ -393,6 +404,38 @@ template <>
 struct is_mj_struct_list<raw::MjWarningStat> {
   static constexpr bool value = true;
 };
+
+// ==================== MJLOGCONFIG ============================================
+template <>
+class MjWrapper<raw::MjLogConfig> : public WrapperBase<raw::MjLogConfig> {
+ public:
+  MjWrapper();
+  MjWrapper(const MjWrapper&);
+  MjWrapper(MjWrapper&&) = default;
+  MjWrapper(raw::MjLogConfig* ptr, pybind11::handle owner);
+  ~MjWrapper() = default;
+};
+
+using MjLogConfigWrapper = MjWrapper<raw::MjLogConfig>;
+
+template <>
+struct enable_if_mj_struct<raw::MjLogConfig> { using type = void; };
+
+// ==================== MJLOGMESSAGE ===========================================
+template <>
+class MjWrapper<raw::MjLogMessage> : public WrapperBase<raw::MjLogMessage> {
+ public:
+  MjWrapper();
+  MjWrapper(const MjWrapper&);
+  MjWrapper(MjWrapper&&) = default;
+  MjWrapper(raw::MjLogMessage* ptr, pybind11::handle owner);
+  ~MjWrapper() = default;
+};
+
+using MjLogMessageWrapper = MjWrapper<raw::MjLogMessage>;
+
+template <>
+struct enable_if_mj_struct<raw::MjLogMessage> { using type = void; };
 
 // ==================== MJTIMERSTAT ============================================
 template <>
@@ -521,19 +564,22 @@ class MjWrapper<raw::MjModel> : public WrapperBase<raw::MjModel> {
   static MjWrapper LoadXMLFile(
       const std::string& filename,
       const std::optional<
-          std::unordered_map<std::string, pybind11::bytes>>& assets);
+          std::unordered_map<std::string, pybind11::bytes>>& assets,
+      MjVfs* vfs = nullptr);
 
   static MjWrapper LoadBinaryFile(
       const std::string& filename,
       const std::optional<
-          std::unordered_map<std::string, pybind11::bytes>>& assets);
+          std::unordered_map<std::string, pybind11::bytes>>& assets,
+      MjVfs* vfs = nullptr);
 
   static MjWrapper LoadXML(
       const std::string& xml,
       const std::optional<
-          std::unordered_map<std::string, pybind11::bytes>>& assets);
+          std::unordered_map<std::string, pybind11::bytes>>& assets,
+      MjVfs* vfs = nullptr);
 
-  static MjWrapper CompileSpec(raw::MjSpec* spec, const mjVFS* vfs);
+  static MjWrapper WrapRawModel(raw::MjModel* m);
 
   static constexpr char kFromRawPointer[] =
       "__MUJOCO_STRUCTS_MJMODELWRAPPER_LOOKUP";
@@ -562,6 +608,27 @@ struct enable_if_mj_struct<raw::MjModel> { using type = void; };
 
 // ==================== MJCONTACT ==============================================
 template <>
+class MjWrapper<raw::MjPreContact> : public WrapperBase<raw::MjPreContact> {
+ public:
+  MjWrapper();
+  MjWrapper(const MjWrapper&);
+  MjWrapper(MjWrapper&&) = default;
+  MjWrapper(raw::MjPreContact* ptr, pybind11::handle owner);
+  ~MjWrapper() = default;
+
+  #define X(var)                                                     \
+    py_array_or_tuple_t<                                             \
+        std::remove_all_extents_t<decltype(raw::MjPreContact::var)>> \
+        var
+  X(pos);
+  X(normal);
+  X(tangent);
+  #undef X
+};
+
+using MjPreContactWrapper = MjWrapper<raw::MjPreContact>;
+
+template <>
 class MjWrapper<raw::MjContact> : public WrapperBase<raw::MjContact> {
  public:
   MjWrapper();
@@ -580,6 +647,7 @@ class MjWrapper<raw::MjContact> : public WrapperBase<raw::MjContact> {
   X(solref);
   X(solreffriction);
   X(solimp);
+  X(surfacevel);
   X(H);
   X(geom);
   X(flex);
@@ -667,12 +735,12 @@ class MjWrapper<raw::MjData>: public WrapperBase<raw::MjData> {
   py_array_or_tuple_t<mjContact> contact;
 
   py_array_or_tuple_t<size_t> maxuse_threadstack;
-  py_array_or_tuple_t<raw::MjWarningStat> warning;
-  py_array_or_tuple_t<raw::MjTimerStat> timer;
   py_array_or_tuple_t<raw::MjSolverStat> solver;
   py_array_or_tuple_t<int> solver_niter;
   py_array_or_tuple_t<int> solver_nnz;
   py_array_or_tuple_t<mjtNum> solver_fwdinv;
+  py_array_or_tuple_t<raw::MjWarningStat> warning;
+  py_array_or_tuple_t<raw::MjTimerStat> timer;
   py_array_or_tuple_t<mjtNum> energy;
 
  protected:
@@ -783,6 +851,7 @@ class MjWrapper<raw::MjvGeom> : public WrapperBase<raw::MjvGeom> {
   X(pos);
   X(mat);
   X(rgba);
+  X(texrepeat);
   #undef X
 };
 
@@ -970,11 +1039,14 @@ using _impl::MjVisualRgbaWrapper;
 using _impl::MjVisualWrapper;
 using _impl::MjStatisticWrapper;
 using _impl::MjWarningStatWrapper;
+using _impl::MjLogConfigWrapper;
+using _impl::MjLogMessageWrapper;
 using _impl::MjTimerStatWrapper;
 using _impl::MjSolverStatWrapper;
 using _impl::MjModelWrapper;
 using _impl::MjDataWrapper;
 using _impl::MjContactWrapper;
+using _impl::MjPreContactWrapper;
 using _impl::MjvPerturbWrapper;
 using _impl::MjvCameraWrapper;
 using _impl::MjvGLCameraWrapper;
@@ -1006,7 +1078,7 @@ using _impl::MjSolverStatList;
 template <typename T, typename Shape>
 std::enable_if_t<std::is_arithmetic_v<T>, pybind11::array_t<T>>
 static InitPyArray(Shape&& shape, T* buf, pybind11::handle owner) {
-  int size = 1;
+  mjtSize size = 1;
   for (const auto& i : shape) {
     size *= i;
   }
@@ -1043,7 +1115,7 @@ template <typename T, typename Shape>
 std::enable_if_t<!std::is_arithmetic_v<T> && !is_mj_struct_list_v<T>,
                  pybind11::tuple>
 static InitPyArray(Shape&& shape, T* buf, pybind11::handle owner) {
-  int size = 1;
+  mjtSize size = 1;
   for (const auto& i : shape) {
     size *= i;
   }
@@ -1145,6 +1217,23 @@ static void DefinePyStr(pybind11::class_<C, O...> c, const char* name,
       });
 }
 
+// Defines a struct property of a Python class that supports assignments by
+// copying the underlying C struct in place.
+//
+// Use `DefinePyStruct(c, "somestruct", &MjStructHolder<C>::somestruct)`
+// as a drop-in replacement for
+// `c.def_readonly("somestruct", &MjStructHolder<C>::somestruct)`.
+template <typename T, typename C, typename... O>
+static void DefinePyStruct(pybind11::class_<C, O...> c, const char* name,
+                           T C::* member) {
+  c.def_property(
+      name,
+      [member](const C& wrapper) -> const T& { return wrapper.*member; },
+      [member](C& wrapper, const T& rhs) {
+        *(wrapper.*member).get() = *rhs.get();
+      });
+}
+
 // An equals operator that works for comparing numpy arrays too.
 // Unlike other objects, the equality operator for numpy arrays returns a
 // numpy array.
@@ -1206,8 +1295,8 @@ bool StructsEqual(pybind11::object lhs, pybind11::object rhs) {
 
 // Returns a string representation of a struct like object.
 template <typename T>
-std::string StructRepr(pybind11::object self) {
-  std::ostringstream result;
+void StructReprImpl(pybind11::object self, std::ostringstream& result,
+                    int indent) {
   result << "<"
          << self.attr("__class__").attr("__name__").cast<std::string_view>();
   for (pybind11::handle f : Dir<T>()) {
@@ -1216,10 +1305,16 @@ std::string StructRepr(pybind11::object self) {
       continue;
     }
 
-    result << "\n  " << name << ": "
+    result << "\n" << std::string(indent + 2, ' ') << name << ": "
            << self.attr(f).attr("__repr__")().cast<std::string_view>();
   }
-  result << "\n>";
+  result << "\n" << std::string(indent, ' ') << ">";
+}
+
+template <typename T>
+std::string StructRepr(pybind11::object self) {
+  std::ostringstream result;
+  StructReprImpl<T>(self, result, 0);
   return result.str();
 }
 

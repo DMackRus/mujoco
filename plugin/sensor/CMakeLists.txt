@@ -18,12 +18,15 @@ set(MUJOCO_SENSOR_INCLUDE
 )
 
 set(MUJOCO_SENSOR_SRCS
-    sensor.cc
+    register.cc
     touch_grid.h
     touch_grid.cc
 )
 
 add_library(sensor SHARED)
+set_target_properties(
+  sensor PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/mujoco_plugin"
+)
 target_sources(sensor PRIVATE ${MUJOCO_SENSOR_SRCS})
 target_include_directories(sensor PRIVATE ${MUJOCO_SENSOR_INCLUDE})
 target_link_libraries(sensor PRIVATE mujoco)

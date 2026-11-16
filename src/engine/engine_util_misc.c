@@ -15,16 +15,17 @@
 #include "engine/engine_util_misc.h"
 
 #include <ctype.h>
+#include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <mujoco/mjdata.h>
 #include <mujoco/mjmacro.h>
-#include <mujoco/mjmodel.h>
+#include <mujoco/mjtype.h>
 #include "engine/engine_array_safety.h"
-#include "engine/engine_macro.h"
+#include "engine/engine_crossplatform.h"
 #include "engine/engine_util_blas.h"
 #include "engine/engine_util_errmem.h"
 #include "engine/engine_util_spatial.h"
@@ -32,44 +33,49 @@
 //------------------------------ tendon wrapping ---------------------------------------------------
 
 // check for intersection of two 2D line segments
-static mjtByte is_intersect(const mjtNum* p1, const mjtNum* p2,
+static mjtBool is_intersect(const mjtNum* p1, const mjtNum* p2,
                             const mjtNum* p3, const mjtNum* p4) {
-  mjtNum a, b;
+  mjtNum u[2] = {p2[0] - p1[0], p2[1] - p1[1]};
+  mjtNum v[2] = {p4[0] - p3[0], p4[1] - p3[1]};
 
   // compute determinant, check
-  mjtNum det = (p4[1]-p3[1])*(p2[0]-p1[0]) - (p4[0]-p3[0])*(p2[1]-p1[1]);
+  mjtNum det = v[1]*u[0] - v[0]*u[1];
   if (mju_abs(det) < mjMINVAL) {
-    return 0;
+    return false;
   }
 
   // compute intersection point on each line
-  a = ((p4[0]-p3[0])*(p1[1]-p3[1]) - (p4[1]-p3[1])*(p1[0]-p3[0])) / det;
-  b = ((p2[0]-p1[0])*(p1[1]-p3[1]) - (p2[1]-p1[1])*(p1[0]-p3[0])) / det;
+  mjtNum s = (det > 0 ? 1 : -1);
+  mjtNum w[2] = {p1[0] - p3[0], p1[1] - p3[1]};
+  mjtNum d[2] = {p2[0] - p4[0], p2[1] - p4[1]};
+  mjtNum a0 = (v[0]*w[1] - v[1]*w[0]) * s;
+  mjtNum a1 = (v[0]*d[1] - v[1]*d[0]) * s;
+  mjtNum b0 = (u[0]*w[1] - u[1]*w[0]) * s;
+  mjtNum b1 = (u[0]*d[1] - u[1]*d[0]) * s;
 
-  return ((a >= 0 && a <= 1 && b >= 0 && b <= 1) ? 1 : 0);
+  return (a0 >= 0 && a1 < 0 && b0 >= 0 && b1 < 0);
 }
-
 
 
 // curve length along circle
 static mjtNum length_circle(const mjtNum* p0, const mjtNum* p1, int ind, mjtNum radius) {
-  mjtNum p0n[2] = {p0[0], p0[1]};
-  mjtNum p1n[2] = {p1[0], p1[1]};
-
   // compute angle between 0 and pi
-  mju_normalize(p0n, 2);
-  mju_normalize(p1n, 2);
-  mjtNum angle = mju_acos(mju_dot(p0n, p1n, 2));
+  mjtNum cross = p0[1]*p1[0] - p0[0]*p1[1];
+  mjtNum angle = mju_atan2(mju_abs(cross), mju_dot(p0, p1, 2));
 
   // flip if necessary
-  mjtNum cross = p0[1]*p1[0]-p0[0]*p1[1];
-  if ((cross > 0 && ind) || (cross < 0 && !ind)) {
+  if (angle > 1e-6 && ((cross > 0 && ind) || (cross < 0 && !ind))) {
     angle = 2*mjPI - angle;
   }
 
   return radius*angle;
 }
 
+
+// signed angle swept from p to q around the origin, in (-pi, pi]
+static mjtNum winding_angle(const mjtNum p[2], const mjtNum q[2]) {
+  return mju_atan2(p[0]*q[1] - p[1]*q[0], p[0]*q[0] + p[1]*q[1]);
+}
 
 
 // 2D circle wrap
@@ -101,18 +107,31 @@ static mjtNum wrap_circle(mjtNum pnt[4], const mjtNum end[4], const mjtNum* side
     a = 1;
   }
 
-  // check for intersection and side
+  // check for intersection
   mjtNum tmp[2] = {a*dif[0] + end[0], a*dif[1] + end[1]};
-  if (tmp[0]*tmp[0]+tmp[1]*tmp[1] > sqrad && (!side || mju_dot(side, tmp, 2) >= 0)) {
+  int clear = tmp[0]*tmp[0] + tmp[1]*tmp[1] > sqrad;
+
+  // side: the path is homotopic to the polyline end0 -> side -> end1, whose winding angle around
+  // the center determines the wrap orientation; the segment end0 -> end1 is in the same homotopy
+  // class iff its winding angle is the same (they differ by multiples of 2*pi)
+  int ccw = 0;
+  mjtNum wside = 0;
+  if (side) {
+    wside = winding_angle(end, side) + winding_angle(side, end+2);
+    if (clear && mju_abs(wside - winding_angle(end, end+2)) < mjPI) {
+      return -1;
+    }
+    ccw = (wside > 0);
+  } else if (clear) {
     return -1;
   }
+
+  mjtNum sqrt0 = mju_sqrt(sqlen0 - sqrad);
+  mjtNum sqrt1 = mju_sqrt(sqlen1 - sqrad);
 
   // construct the two solutions, compute goodness
   mjtNum sol[2][2][2], good[2];
   for (int i=0; i < 2; i++) {
-    mjtNum sqrt0 = mju_sqrt(sqlen0 - sqrad);
-    mjtNum sqrt1 = mju_sqrt(sqlen1 - sqrad);
-
     int sgn = (i == 0 ? 1 : -1);
 
     sol[i][0][0] = (end[0]*sqrad + sgn*radius*end[1]*sqrt0)/sqlen0;
@@ -120,15 +139,9 @@ static mjtNum wrap_circle(mjtNum pnt[4], const mjtNum end[4], const mjtNum* side
     sol[i][1][0] = (end[2]*sqrad - sgn*radius*end[3]*sqrt1)/sqlen1;
     sol[i][1][1] = (end[3]*sqrad + sgn*radius*end[2]*sqrt1)/sqlen1;
 
-    // goodness: close to sd, or shorter path
-    if (side) {
-      mju_add(tmp, sol[i][0], sol[i][1], 2);
-      mju_normalize(tmp, 2);
-      good[i] = mju_dot(tmp, side, 2);
-    } else {
-      mju_sub(tmp, sol[i][0], sol[i][1], 2);
-      good[i] = -mju_dot(tmp, tmp, 2);
-    }
+    // goodness: shorter path
+    mju_sub(tmp, sol[i][0], sol[i][1], 2);
+    good[i] = -mju_dot(tmp, tmp, 2);
 
     // penalize for intersection
     if (is_intersect(end, sol[i][0], end+2, sol[i][1])) {
@@ -136,8 +149,8 @@ static mjtNum wrap_circle(mjtNum pnt[4], const mjtNum end[4], const mjtNum* side
     }
   }
 
-  // select the better solution
-  int i = (good[0] > good[1] ? 0 : 1);
+  // select the solution: with side, by orientation (i=1 is counterclockwise), otherwise the better
+  int i = side ? ccw : (good[0] > good[1] ? 0 : 1);
   pnt[0] = sol[i][0][0];
   pnt[1] = sol[i][0][1];
   pnt[2] = sol[i][1][0];
@@ -148,10 +161,16 @@ static mjtNum wrap_circle(mjtNum pnt[4], const mjtNum end[4], const mjtNum* side
     return -1;
   }
 
+  // side: the path winds like the polyline, so the arc angle is its winding minus that of the
+  // tangent segments; unlike length_circle, this is accurate for wraps close to 2*pi
+  if (side) {
+    mjtNum arc = wside - winding_angle(end, pnt) - winding_angle(pnt+2, end+2);
+    return radius*mju_abs(arc);
+  }
+
   // return curve length
   return length_circle(sol[i][0], sol[i][1], i, radius);
 }
-
 
 
 // 2D inside wrap
@@ -160,7 +179,6 @@ static mjtNum wrap_circle(mjtNum pnt[4], const mjtNum end[4], const mjtNum* side
 static mjtNum wrap_inside(mjtNum pnt[4], const mjtNum end[4], mjtNum radius) {
   // algorithm parameters
   const int maxiter = 20;
-  const mjtNum zinit = 1 - 1e-7;
   const mjtNum tolerance = 1e-6;
 
   // constants
@@ -209,8 +227,9 @@ static mjtNum wrap_inside(mjtNum pnt[4], const mjtNum end[4], mjtNum radius) {
   mjtNum G = mju_acos(cosG);
 
   // init
-  mjtNum z = zinit;
-  mjtNum f = mju_asin(A*z) + mju_asin(B*z) - 2*mju_asin(z) + G;
+  mjtNum phi = mjPI/2;
+  mjtNum z = mju_sin(phi);
+  mjtNum f = mju_asin(A*z) + mju_asin(B*z) - 2*phi + G;
 
   // make sure init is not on the other side
   if (f > 0) {
@@ -221,9 +240,8 @@ static mjtNum wrap_inside(mjtNum pnt[4], const mjtNum end[4], mjtNum radius) {
   int iter;
   for (iter=0; iter < maxiter && mju_abs(f) > tolerance; iter++) {
     // derivative
-    mjtNum df = A/mju_max(mjMINVAL, mju_sqrt(1-z*z*A*A)) +
-                B/mju_max(mjMINVAL, mju_sqrt(1-z*z*B*B)) -
-                2/mju_max(mjMINVAL, mju_sqrt(1-z*z));
+    mjtNum df = mju_cos(phi)*(A/mju_max(mjMINVAL, mju_sqrt(1-z*z*A*A)) +
+                              B/mju_max(mjMINVAL, mju_sqrt(1-z*z*B*B))) - 2;
 
     // check sign; SHOULD NOT OCCUR
     if (df > -mjMINVAL) {
@@ -231,16 +249,17 @@ static mjtNum wrap_inside(mjtNum pnt[4], const mjtNum end[4], mjtNum radius) {
     }
 
     // new point
-    mjtNum z1 = z - f/df;
+    mjtNum phi1 = phi - f/df;
 
     // make sure we are moving to the left; SHOULD NOT OCCUR
-    if (z1 > z) {
+    if (phi1 > phi) {
       return 0;
     }
 
     // update solution
-    z = z1;
-    f = mju_asin(A*z) + mju_asin(B*z) - 2*mju_asin(z) + G;
+    phi = phi1;
+    z = mju_sin(phi);
+    f = mju_asin(A*z) + mju_asin(B*z) - 2*phi + G;
 
     // exit if positive; SHOULD NOT OCCUR
     if (f > tolerance) {
@@ -258,10 +277,10 @@ static mjtNum wrap_inside(mjtNum pnt[4], const mjtNum end[4], mjtNum radius) {
   mjtNum ang;
   if (end[0]*end[3] - end[1]*end[2] > 0) {
     mju_copy(vec, end, 2);
-    ang = mju_asin(z) - mju_asin(A*z);
+    ang = phi - mju_asin(A*z);
   } else {
     mju_copy(vec, end+2, 2);
-    ang = mju_asin(z) - mju_asin(B*z);
+    ang = phi - mju_asin(B*z);
   }
   mju_normalize(vec, 2);
   pnt[0] = radius*(mju_cos(ang)*vec[0] - mju_sin(ang)*vec[1]);
@@ -271,7 +290,6 @@ static mjtNum wrap_inside(mjtNum pnt[4], const mjtNum end[4], mjtNum radius) {
 
   return 0;
 }
-
 
 
 // wrap tendons around spheres and cylinders
@@ -420,11 +438,11 @@ mjtNum mju_wrap(mjtNum wpnt[6], const mjtNum x0[3], const mjtNum x1[3],
 }
 
 
+//------------------------------ misc geometry -----------------------------------------------------
 
 // all 3 semi-axes of a geom
-void mju_geomSemiAxes(const mjModel* m, int geom_id, mjtNum semiaxes[3]) {
-  mjtNum* size = m->geom_size + 3*geom_id;
-  switch ((mjtGeom) m->geom_type[geom_id]) {
+void mju_geomSemiAxes(mjtNum semiaxes[3], const mjtNum size[3], mjtGeom type) {
+  switch (type) {
   case mjGEOM_SPHERE:
     semiaxes[0] = size[0];
     semiaxes[1] = size[0];
@@ -450,6 +468,492 @@ void mju_geomSemiAxes(const mjModel* m, int geom_id, mjtNum semiaxes[3]) {
   }
 }
 
+
+// return 1 if point is inside a primitive geom, 0 otherwise
+int mju_insidePrimitive(const mjtNum pos[3], const mjtNum mat[9], const mjtNum size[3], mjtGeom type,
+                        const mjtNum point[3]) {
+  // vector from geom to point
+  mjtNum vec[3];
+  mju_sub3(vec, point, pos);
+
+  // quick return for spheres, frame rotation not required
+  if (type == mjGEOM_SPHERE) {
+    return mju_dot3(vec, vec) < size[0]*size[0];
+  }
+
+  // rotate into local frame
+  mjtNum plocal[3];
+  mju_mulMatTVec3(plocal, mat, vec);
+
+  // handle other geom types
+  switch (type) {
+  case mjGEOM_CAPSULE: {
+    mjtNum z = plocal[2];
+    mjtNum z_clamped = mju_clip(z, -size[1], size[1]);
+    mjtNum z_dist_sq = (z - z_clamped) * (z - z_clamped);
+    return (plocal[0]*plocal[0] + plocal[1]*plocal[1] + z_dist_sq < size[0]*size[0]);
+  }
+
+  case mjGEOM_ELLIPSOID:
+    return (plocal[0]*plocal[0]/(size[0]*size[0]) +
+            plocal[1]*plocal[1]/(size[1]*size[1]) +
+            plocal[2]*plocal[2]/(size[2]*size[2]) < 1);
+
+  case mjGEOM_CYLINDER:
+    return (mju_abs(plocal[2]) < size[1] &&
+            plocal[0]*plocal[0] + plocal[1]*plocal[1] < size[0]*size[0]);
+
+  case mjGEOM_BOX:
+    return (mju_abs(plocal[0]) < size[0] &&
+            mju_abs(plocal[1]) < size[1] &&
+            mju_abs(plocal[2]) < size[2]);
+
+  case mjGEOM_PLANE:
+    return plocal[2] < 0;
+
+  default:
+    return 0;
+  }
+}
+
+
+// compute ray origin and direction for pixel (col, row) in camera image
+// for perspective: origin is unchanged, direction is computed
+// for orthographic: direction is -Z in camera frame, origin is offset from camera center
+void mju_camPixelRay(mjtNum origin[3], mjtNum direction[3],
+                     const mjtNum cam_xpos[3], const mjtNum cam_xmat[9],
+                     int col, int row, mjtNum fx, mjtNum fy, mjtNum cx, mjtNum cy,
+                     int projection, mjtNum ortho_extent) {
+  // pixel center (row 0 = top of image)
+  mjtNum px = col + 0.5 - cx;
+  mjtNum py = row + 0.5 - cy;
+
+  if (projection == mjPROJ_PERSPECTIVE) {
+    // origin is camera position
+    mju_copy3(origin, cam_xpos);
+
+    // direction in camera frame: (x/fx, -y/fy, -1), then normalized
+    mjtNum dir_cam[3] = {px / fx, -py / fy, -1.0};
+    mju_mulMatVec3(direction, cam_xmat, dir_cam);
+    mju_normalize3(direction);
+  } else {
+    // orthographic: parallel rays, direction is -Z in camera frame
+    direction[0] = -cam_xmat[2];
+    direction[1] = -cam_xmat[5];
+    direction[2] = -cam_xmat[8];
+
+    // origin offset in camera frame (ortho_extent is full height, use half for each side)
+    mjtNum half_extent = ortho_extent / 2;
+    mjtNum offset_cam[3] = {px / fx * half_extent, -py / fy * half_extent, 0};
+    mjtNum offset_world[3];
+    mju_mulMatVec3(offset_world, cam_xmat, offset_cam);
+    mju_add3(origin, cam_xpos, offset_world);
+  }
+}
+
+
+// ----------------------------- flex interpolation ------------------------------------------------
+
+// use shared shape functions from engine_util_misc.h
+#define phi mju_flexPhi
+#define dphi mju_flexDphi
+
+// evaluate the deformation gradient at p using the nodal dof values
+void mju_defGradient(mjtNum res[9], const mjtNum p[3], const mjtNum* dof, int order) {
+  int idx = 0;
+  mjtNum gradient[3];
+  mju_zero(res, 9);
+  for (int i = 0; i <= order; i++) {
+    for (int j = 0; j <= order; j++) {
+      for (int k = 0; k <= order; k++) {
+        gradient[0] = dphi(p[0], i, order) *  phi(p[1], j, order) *  phi(p[2], k, order);
+        gradient[1] =  phi(p[0], i, order) * dphi(p[1], j, order) *  phi(p[2], k, order);
+        gradient[2] =  phi(p[0], i, order) *  phi(p[1], j, order) * dphi(p[2], k, order);
+        res[0] += dof[3*idx+0] * gradient[0];
+        res[1] += dof[3*idx+0] * gradient[1];
+        res[2] += dof[3*idx+0] * gradient[2];
+        res[3] += dof[3*idx+1] * gradient[0];
+        res[4] += dof[3*idx+1] * gradient[1];
+        res[5] += dof[3*idx+1] * gradient[2];
+        res[6] += dof[3*idx+2] * gradient[0];
+        res[7] += dof[3*idx+2] * gradient[1];
+        res[8] += dof[3*idx+2] * gradient[2];
+        idx++;
+      }
+    }
+  }
+}
+
+// evaluate the basis function at x for the i-th node
+mjtNum mju_evalBasis(const mjtNum x[3], int i, int order) {
+  if (order == 1) {
+    return phi(x[2], i&1, order) * phi(x[1], i&2, order) * phi(x[0], i&4, order);
+  } else if (order == 2) {
+    return phi(x[2], i % 3, order) * phi(x[1], (i / 3) % 3, order) * phi(x[0], i / 9, order);
+  } else {
+    return -1;
+  }
+}
+
+// evaluate the basis functions at x for all nodes in the cell
+void mju_evalBasisArray(mjtNum* basis, const mjtNum x[3], int order) {
+  if (order == 1) {
+    mjtNum p[3][2] = {
+      {1 - x[0], x[0]},
+      {1 - x[1], x[1]},
+      {1 - x[2], x[2]}
+    };
+    int j = 0;
+    for (int i0=0; i0<2; i0++) {
+      mjtNum w0 = p[0][i0];
+      for (int i1=0; i1<2; i1++) {
+        mjtNum w01 = w0 * p[1][i1];
+        for (int i2=0; i2<2; i2++) {
+          basis[j++] = w01 * p[2][i2];
+        }
+      }
+    }
+  } else if (order == 2) {
+    mjtNum p[3][3];
+    for (int d=0; d<3; d++) {
+      for (int i=0; i<3; i++) {
+        p[d][i] = phi(x[d], i, 2);
+      }
+    }
+    int j = 0;
+    for (int i0=0; i0<3; i0++) {
+      mjtNum w0 = p[0][i0];
+      for (int i1=0; i1<3; i1++) {
+        mjtNum w01 = w0 * p[1][i1];
+        for (int i2=0; i2<3; i2++) {
+          basis[j++] = w01 * p[2][i2];
+        }
+      }
+    }
+  } else {
+    int npoint = (order + 1) * (order + 1) * (order + 1);
+    for (int j=0; j < npoint; j++) {
+      basis[j] = mju_evalBasis(x, j, order);
+    }
+  }
+}
+
+// map global parametric coord to cell-local coord and build node indices
+//   coord: [0,1]^3 parametric coordinates
+//   cellnum: cell counts (cx, cy, cz)
+//   order: interpolation order (1=trilinear, 2=triquadratic)
+//   cell: flat cell index (ci*cy*cz + cj*cz + ck), or -1 to compute from coord
+//   local: output local parametric coordinates within cell (extrapolated within [-0.02, 1.02]^3 if
+//          cell differs from the natural cell of coord)
+//   nodeindices: output array of global node indices for the cell (size (order+1)^3, may be NULL)
+//   returns: number of nodes per cell (order+1)^3
+int mju_cellLookup(const mjtNum coord[3], const int cellnum[3], int order, int cell,
+                   mjtNum local[3], int* nodeindices) {
+  int cx = cellnum[0], cy = cellnum[1], cz = cellnum[2];
+
+  // find containing cell
+  int ci = (int)mju_floor(coord[0] * cx);
+  int cj = (int)mju_floor(coord[1] * cy);
+  int ck = (int)mju_floor(coord[2] * cz);
+  ci = mjMIN(ci, cx - 1); ci = mjMAX(ci, 0);
+  cj = mjMIN(cj, cy - 1); cj = mjMAX(cj, 0);
+  ck = mjMIN(ck, cz - 1); ck = mjMAX(ck, 0);
+
+  // if precomputed cell differs from natural cell, redirect and extrapolate within [-0.02, 1.02]
+  if (cell >= 0 && cell != ci * cy * cz + cj * cz + ck) {
+    ck = cell % cz;
+    cj = (cell / cz) % cy;
+    ci = cell / (cy * cz);
+    const mjtNum kMaxExtrap = 0.02;  // must match kSliverMargin in user_flexcomp.cc
+    local[0] = mju_clip(coord[0] * cx - ci, -kMaxExtrap, 1 + kMaxExtrap);
+    local[1] = mju_clip(coord[1] * cy - cj, -kMaxExtrap, 1 + kMaxExtrap);
+    local[2] = mju_clip(coord[2] * cz - ck, -kMaxExtrap, 1 + kMaxExtrap);
+  } else {
+    local[0] = mju_clip(coord[0] * cx - ci, 0, 1);
+    local[1] = mju_clip(coord[1] * cy - cj, 0, 1);
+    local[2] = mju_clip(coord[2] * cz - ck, 0, 1);
+  }
+
+  // build node indices for this cell
+  if (nodeindices) {
+    int gi_base = ci * order;
+    int gj_base = cj * order;
+    int gk_base = ck * order;
+    int ny_g = cy * order + 1;
+    int nz_g = cz * order + 1;
+    int ni = 0;
+    for (int li = 0; li <= order; li++) {
+      int gi = gi_base + li;
+      int gi_stride = gi * ny_g * nz_g;
+      for (int lj = 0; lj <= order; lj++) {
+        int gj = gj_base + lj;
+        int gj_stride = gi_stride + gj * nz_g;
+        for (int lk = 0; lk <= order; lk++) {
+          int gk = gk_base + lk;
+          nodeindices[ni++] = gj_stride + gk;
+        }
+      }
+    }
+  }
+
+  int npc = (order + 1) * (order + 1) * (order + 1);
+  return npc;
+}
+
+
+static void flexInterpRotation(int order, const mjtNum* xpos_c,
+                               const mjtNum dref[3], const mjtNum local[3],
+                               mjtNum* quat) {
+  mjtNum mat[9] = {0};
+
+  if (order > 0) {
+    mju_defGradient(mat, local, xpos_c, order);
+    for (int col = 0; col < 3; col++) {
+      if (dref[col] > mjMINVAL) {
+        mjtNum inv = 1 / dref[col];
+        mat[0*3 + col] *= inv;
+        mat[1*3 + col] *= inv;
+        mat[2*3 + col] *= inv;
+      }
+    }
+  } else {
+    // order 0: fallback to identity matrix
+    mat[0] = 1;
+    mat[4] = 1;
+    mat[8] = 1;
+  }
+
+  // find rotation
+  mju_unit4(quat);
+  mju_mat2Rot(quat, mat);
+  mju_negQuat(quat, quat);
+}
+
+
+// gather cell-local quantities and optionally compute rotation
+void mju_flexGatherCellState(int order, int cy, int cz, int ci, int cj, int ck,
+                             const mjtNum* xpos_g, const mjtNum* vel_g, const mjtNum* xpos0_g,
+                             mjtNum* xpos_c, mjtNum* vel_c, mjtNum* xpos0_c,
+                             int* nodeindices, mjtNum* quat) {
+  int ny_g = cy * order + 1;
+  int nz_g = cz * order + 1;
+
+  int local = 0;
+  for (int li = 0; li <= order; li++) {
+    for (int lj = 0; lj <= order; lj++) {
+      for (int lk = 0; lk <= order; lk++) {
+        int gi = ci*order + li;
+        int gj = cj*order + lj;
+        int gk = ck*order + lk;
+        int gidx = gi*ny_g*nz_g + gj*nz_g + gk;
+
+        if (xpos_c && xpos_g) mju_copy3(xpos_c + 3*local, xpos_g + 3*gidx);
+        if (vel_c && vel_g) mju_copy3(vel_c + 3*local, vel_g + 3*gidx);
+        if (xpos0_c && xpos0_g) mju_copy3(xpos0_c + 3*local, xpos0_g + 3*gidx);
+        if (nodeindices) nodeindices[local] = gidx;
+
+        local++;
+      }
+    }
+  }
+
+  if (quat && xpos_c) {
+    mjtNum p[3] = {.5, .5, .5};
+    mjtNum dref[3] = {1, 1, 1};
+    if (xpos0_g && order > 0) {
+      int gidx0 = (ci*order)*ny_g*nz_g + (cj*order)*nz_g + (ck*order);
+      int gidx1 = ((ci+1)*order)*ny_g*nz_g + ((cj+1)*order)*nz_g + ((ck+1)*order);
+      mju_sub3(dref, xpos0_g + 3*gidx1, xpos0_g + 3*gidx0);
+    }
+    flexInterpRotation(order, xpos_c, dref, p, quat);
+  }
+}
+
+
+// compute corotational rotation from 2D deformation gradient on a flat face
+void mju_flexInterpRotation2D(int order, const mjtNum* xpos_f, int npe,
+                              int axis0, int axis1, int normal_axis,
+                              const mjtNum local[2], mjtNum* quat) {
+  // compute 3x2 deformation gradient F at parametric point local
+  mjtNum t1[3] = {0, 0, 0};  // tangent along axis0
+  mjtNum t2[3] = {0, 0, 0};  // tangent along axis1
+  int idx = 0;
+  for (int l0 = 0; l0 <= order; l0++) {
+    for (int l1 = 0; l1 <= order; l1++) {
+      mjtNum grad0 = dphi(local[0], l0, order) * phi(local[1], l1, order);
+      mjtNum grad1 = phi(local[0], l0, order) * dphi(local[1], l1, order);
+      for (int d = 0; d < 3; d++) {
+        t1[d] += xpos_f[3*idx + d] * grad0;
+        t2[d] += xpos_f[3*idx + d] * grad1;
+      }
+      idx++;
+    }
+  }
+
+  // normal = t1 x t2
+  mjtNum normal[3];
+  mju_cross(normal, t1, t2);
+
+  // build 3x3 matrix with columns assigned to canonical axes (row-major)
+  // axis0 → t1, axis1 → t2, normal_axis → normal
+  // this ensures identity rotation for axis-aligned grids
+  mjtNum mat[9] = {0};
+  mjtNum* vecs[3];
+  vecs[axis0] = t1;
+  vecs[axis1] = t2;
+  vecs[normal_axis] = normal;
+
+  for (int col = 0; col < 3; col++) {
+    mat[0*3 + col] = vecs[col][0];
+    mat[1*3 + col] = vecs[col][1];
+    mat[2*3 + col] = vecs[col][2];
+  }
+
+  // extract rotation via polar decomposition
+  mju_unit4(quat);
+  mju_mat2Rot(quat, mat);
+  mju_negQuat(quat, quat);
+}
+
+
+// gather face-element-local quantities and optionally compute rotation (shell mode)
+//
+// face element enumeration for a grid with cell counts (cx, cy, cz):
+//   face 0: x=0     cy*cz quads (normal=0)
+//   face 1: x=max   cy*cz quads (normal=0)
+//   face 2: y=0     cx*cz quads (normal=1)
+//   face 3: y=max   cx*cz quads (normal=1)
+//   face 4: z=0     cx*cy quads (normal=2)
+//   face 5: z=max   cx*cy quads (normal=2)
+void mju_flexGatherFaceState(int order, int cx, int cy, int cz,
+                             int face_elem_idx,
+                             const mjtNum* xpos_g, const mjtNum* vel_g,
+                             const mjtNum* xpos0_g,
+                             mjtNum* xpos_f, mjtNum* vel_f, mjtNum* xpos0_f,
+                             int* nodeindices, mjtNum* quat) {
+  int ny_g = cy * order + 1;
+  int nz_g = cz * order + 1;
+  int npe = (order + 1) * (order + 1);
+
+  // face sizes and properties
+  int face_sizes[6] = {cy*cz, cy*cz, cx*cz, cx*cz, cx*cy, cx*cy};
+  int face_normal[6] = {0, 0, 1, 1, 2, 2};
+  int face_count1[6] = {cz, cz, cx, cx, cy, cy};
+  int face_fixed_vals[6];
+  face_fixed_vals[0] = 0;
+  face_fixed_vals[1] = cx * order;
+  face_fixed_vals[2] = 0;
+  face_fixed_vals[3] = cy * order;
+  face_fixed_vals[4] = 0;
+  face_fixed_vals[5] = cz * order;
+
+  // determine which face and quad within face
+  int face_id = 0;
+  int within_face = face_elem_idx;
+  int cumul = 0;
+  for (int f = 0; f < 6; f++) {
+    if (face_elem_idx < cumul + face_sizes[f]) {
+      face_id = f;
+      within_face = face_elem_idx - cumul;
+      break;
+    }
+    cumul += face_sizes[f];
+  }
+
+  int normal_axis = face_normal[face_id];
+  int na0 = (normal_axis + 1) % 3;  // slow in-plane axis
+  int na1 = (normal_axis + 2) % 3;  // fast in-plane axis
+  int c1 = face_count1[face_id];
+  int g_fixed = face_fixed_vals[face_id];
+  int q0 = within_face / c1;
+  int q1 = within_face % c1;
+
+  // gather nodes
+  int local = 0;
+  int gidx0 = 0, gidx1 = 0;
+  for (int l0 = 0; l0 <= order; l0++) {
+    for (int l1 = 0; l1 <= order; l1++) {
+      int g[3];
+      g[normal_axis] = g_fixed;
+      g[na0] = q0 * order + l0;
+      g[na1] = q1 * order + l1;
+      int gidx = g[0] * ny_g * nz_g + g[1] * nz_g + g[2];
+      if (local == 0) gidx0 = gidx;
+      gidx1 = gidx;
+
+      if (xpos_f && xpos_g) mju_copy3(xpos_f + 3*local, xpos_g + 3*gidx);
+      if (vel_f && vel_g) mju_copy3(vel_f + 3*local, vel_g + 3*gidx);
+      if (xpos0_f && xpos0_g) mju_copy3(xpos0_f + 3*local, xpos0_g + 3*gidx);
+      if (nodeindices) nodeindices[local] = gidx;
+
+      local++;
+    }
+  }
+
+  if (quat && xpos_f) {
+    if (xpos0_g && order > 0) {
+      mjtNum d0 = xpos0_g[3*gidx1 + na0] - xpos0_g[3*gidx0 + na0];
+      mjtNum d1 = xpos0_g[3*gidx1 + na1] - xpos0_g[3*gidx0 + na1];
+      mjtNum t1[3] = {0, 0, 0};
+      mjtNum t2[3] = {0, 0, 0};
+      int idx = 0;
+      for (int l0 = 0; l0 <= order; l0++) {
+        for (int l1 = 0; l1 <= order; l1++) {
+          mjtNum grad0 = dphi(0.5, l0, order) * phi(0.5, l1, order);
+          mjtNum grad1 = phi(0.5, l0, order) * dphi(0.5, l1, order);
+          for (int d = 0; d < 3; d++) {
+            t1[d] += xpos_f[3*idx + d] * grad0;
+            t2[d] += xpos_f[3*idx + d] * grad1;
+          }
+          idx++;
+        }
+      }
+      if (d0 > mjMINVAL) mju_scl3(t1, t1, 1 / d0);
+      if (d1 > mjMINVAL) mju_scl3(t2, t2, 1 / d1);
+      mjtNum normal[3];
+      mju_cross(normal, t1, t2);
+      mjtNum mat[9] = {0};
+      mjtNum* vecs[3];
+      vecs[na0] = t1;
+      vecs[na1] = t2;
+      vecs[normal_axis] = normal;
+      for (int col = 0; col < 3; col++) {
+        mat[0*3 + col] = vecs[col][0];
+        mat[1*3 + col] = vecs[col][1];
+        mat[2*3 + col] = vecs[col][2];
+      }
+      mju_unit4(quat);
+      mju_mat2Rot(quat, mat);
+      mju_negQuat(quat, quat);
+    } else {
+      mjtNum p[2] = {.5, .5};
+      mju_flexInterpRotation2D(order, xpos_f, npe, na0, na1, normal_axis, p, quat);
+    }
+  }
+}
+
+
+// compute unnormalized surface normal and tangent vectors at a parametric point
+// on a 2D face element; normal = t1 x t2 (unnormalized)
+void mju_flexFaceNormal2D(mjtNum normal[3], mjtNum t1[3], mjtNum t2[3],
+                          int order, const mjtNum* xpos_f,
+                          const mjtNum local[2]) {
+  mju_zero3(t1);
+  mju_zero3(t2);
+  int idx = 0;
+  for (int l0 = 0; l0 <= order; l0++) {
+    for (int l1 = 0; l1 <= order; l1++) {
+      mjtNum grad0 = dphi(local[0], l0, order) *  phi(local[1], l1, order);
+      mjtNum grad1 =  phi(local[0], l0, order) * dphi(local[1], l1, order);
+      for (int d = 0; d < 3; d++) {
+        t1[d] += xpos_f[3*idx + d] * grad0;
+        t2[d] += xpos_f[3*idx + d] * grad1;
+      }
+      idx++;
+    }
+  }
+  mju_cross(normal, t1, t2);
+}
 
 
 //------------------------------ actuator models ---------------------------------------------------
@@ -478,7 +982,6 @@ mjtNum mju_muscleGainLength(mjtNum length, mjtNum lmin, mjtNum lmax) {
 
   return 0.0;
 }
-
 
 
 // muscle active force, prm = (range[2], force, scale, lmin, lmax, vmax, fpmax, fvmax)
@@ -526,7 +1029,6 @@ mjtNum mju_muscleGain(mjtNum len, mjtNum vel, const mjtNum lengthrange[2],
 }
 
 
-
 // muscle passive force, prm = (range[2], force, scale, lmin, lmax, vmax, fpmax, fvmax)
 mjtNum mju_muscleBias(mjtNum len, const mjtNum lengthrange[2],
                       mjtNum acc0, const mjtNum prm[9]) {
@@ -562,7 +1064,6 @@ mjtNum mju_muscleBias(mjtNum len, const mjtNum lengthrange[2],
 }
 
 
-
 // muscle time constant with optional smoothing
 mjtNum mju_muscleDynamicsTimescale(mjtNum dctrl, mjtNum tau_act, mjtNum tau_deact,
                                    mjtNum smoothing_width) {
@@ -580,7 +1081,6 @@ mjtNum mju_muscleDynamicsTimescale(mjtNum dctrl, mjtNum tau_act, mjtNum tau_deac
   }
   return tau;
 }
-
 
 
 // muscle activation dynamics, prm = (tau_act, tau_deact, smoothing_width)
@@ -603,6 +1103,25 @@ mjtNum mju_muscleDynamics(mjtNum ctrl, mjtNum act, const mjtNum prm[3]) {
   return dctrl / mjMAX(mjMINVAL, tau);
 }
 
+
+// LuGre Stribeck function: g(v) = F_C + (F_S - F_C) * exp(-(v/v_S)^2)
+mjtNum mj_lugreStribeck(mjtNum velocity, mjtNum F_C, mjtNum F_S, mjtNum v_S) {
+  mjtNum ratio = velocity / mju_max(mjMINVAL, v_S);
+  return F_C + (F_S - F_C) * mju_exp(-ratio*ratio);
+}
+
+
+// compute DC motor activation slot indices from parameter arrays
+mjDCMotorSlots mj_dcmotorSlots(const mjtNum* dynprm, const mjtNum* gainprm) {
+  mjDCMotorSlots s = {-1, -1, -1, -1, -1, 0};
+  if (dynprm[7] > 0)  s.slew        = s.num_slots++;  // slew rate limiting
+  if (gainprm[5] > 0) s.integral    = s.num_slots++;  // PI integral
+  if (dynprm[2] > 0)  s.temperature = s.num_slots++;  // thermal model
+  if (dynprm[5] > 0)  s.bristle     = s.num_slots++;  // LuGre bristle
+  if (dynprm[0] > 0)  s.current     = s.num_slots++;  // current filter
+
+  return s;
+}
 
 
 //---------------------------------------- Base64 --------------------------------------------------
@@ -631,7 +1150,6 @@ static uint32_t _decode(char ch) {
 
   return 0;
 }
-
 
 
 // encode data as Base64 into buf (including padding and null char)
@@ -687,7 +1205,6 @@ size_t mju_encodeBase64(char* buf, const uint8_t* data, size_t ndata) {
 }
 
 
-
 // return size in decoded bytes if s is a valid Base64 encoding
 // return 0 if s is empty or invalid Base64 encoding
 size_t mju_isValidBase64(const char* s) {
@@ -716,7 +1233,6 @@ size_t mju_isValidBase64(const char* s) {
   int len = i + pad;
   return len % 4 ? 0 : 3 * (len / 4) - pad;
 }
-
 
 
 // decode valid Base64 in string s into buf, undefined behavior if s is not valid Base64
@@ -749,6 +1265,229 @@ size_t mju_decodeBase64(uint8_t* buf, const char* s) {
 }
 
 
+//------------------------------ history buffers ---------------------------------------------------
+
+// convert logical index (0=oldest, n-1=newest) to physical index
+// cursor points to the newest element (logical index n-1)
+static inline int historyPhysicalIndex(int cursor, int n, int logical) {
+  return (cursor + 1 + logical) % n;
+}
+
+
+// find logical index i such that times[i-1] < t <= times[i], using circular binary search
+// returns 0 if t <= times[oldest], n if t > times[newest]
+// cursor points to the newest element (logical index n-1)
+static int historyFindIndex(const mjtNum* times, int n, int cursor, mjtNum t) {
+  // get oldest and newest timestamps
+  int oldest_phys = historyPhysicalIndex(cursor, n, 0);
+  int newest_phys = historyPhysicalIndex(cursor, n, n-1);
+  mjtNum t_oldest = times[oldest_phys];
+  mjtNum t_newest = times[newest_phys];
+
+  // before or at first element
+  if (t <= t_oldest) {
+    return 0;
+  }
+
+  // after last element
+  if (t > t_newest) {
+    return n;
+  }
+
+  // circular binary search: find smallest logical i such that times[phys(i)] >= t
+  int lo = 0;
+  int hi = n - 1;
+  while (hi - lo > 1) {
+    int mid = (lo + hi) / 2;
+    int mid_phys = historyPhysicalIndex(cursor, n, mid);
+    if (times[mid_phys] < t) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+
+  return hi;
+}
+
+
+// initialize history buffer with given times and values; times must be strictly increasing
+// buffer layout: [user(1), cursor(1), times(n), values(n*dim)]
+void mju_historyInit(mjtNum* buf, int n, int dim, const mjtNum* times, const mjtNum* values,
+                     mjtNum user) {
+  mjtNum* buf_times = buf + 2;
+  mjtNum* buf_values = buf + 2 + n;
+  int cursor = (times == buf_times) ? (int)buf[1] : n - 1;
+  if (cursor < 0 || cursor >= n) {
+    cursor = n - 1;
+  }
+
+  // check strict monotonicity of times
+  for (int i=0; i < n-1; i++) {
+    int idx0 = (times == buf_times) ? historyPhysicalIndex(cursor, n, i) : i;
+    int idx1 = (times == buf_times) ? historyPhysicalIndex(cursor, n, i+1) : i+1;
+    if (times[idx1] - times[idx0] < mjMINVAL) {
+      mjERROR("times must be strictly increasing, got times[%d]=%g >= times[%d]=%g",
+              i, times[idx0], i+1, times[idx1]);
+    }
+  }
+
+  // buf layout: [user(1), cursor(1), times(n), values(n*dim)]
+  buf[0] = user;            // user value
+  buf[1] = (mjtNum)cursor;  // cursor points to newest (logical index n-1)
+
+  if (times != buf_times) {
+    mju_copy(buf_times, times, n);
+    if (values) {
+      mju_copy(buf_values, values, n*dim);
+    }
+  } else if (values) {
+    for (int i=0; i < n; i++) {
+      int phys = historyPhysicalIndex(cursor, n, i);
+      mju_copy(buf_values + phys*dim, values + i*dim, dim);
+    }
+  }
+}
+
+
+// find insertion slot for time t, maintaining sorted order
+// if t matches an existing timestamp, returns pointer to that slot
+// if a new sample is inserted, the oldest sample is dropped
+// returns pointer to value slot where caller should write dim values
+mjtNum* mju_historyInsert(mjtNum* buf, int n, int dim, mjtNum t) {
+  int cursor = (int)buf[1];
+  mjtNum* times = buf + 2;
+  mjtNum* values = buf + 2 + n;
+
+  // find logical insertion index: times[i-1] < t <= times[i]
+  int i = historyFindIndex(times, n, cursor, t);
+
+  // exact match at logical i: return pointer to existing slot
+  if (i < n) {
+    int phys_i = historyPhysicalIndex(cursor, n, i);
+    if (mju_abs(t - times[phys_i]) < mjMINVAL) {
+      return values + phys_i*dim;
+    }
+  }
+
+  // logical i == 0: new sample is older than oldest, replace oldest slot
+  if (i == 0) {
+    int oldest_phys = historyPhysicalIndex(cursor, n, 0);
+    times[oldest_phys] = t;
+    return values + oldest_phys*dim;
+  }
+
+  // logical i == n: new sample is newer than newest, advance cursor and write
+  if (i == n) {
+    cursor = (cursor + 1) % n;
+    buf[1] = (mjtNum)cursor;
+
+    // cursor now points to the new newest slot (which was the old oldest)
+    times[cursor] = t;
+    return values + cursor*dim;
+  }
+
+  // 0 < i < n: out-of-order insertion, shift [1, i-1] left (dropping 0), insert at i-1
+  for (int j = 0; j < i-1; j++) {
+    int src_phys = historyPhysicalIndex(cursor, n, j+1);
+    int dst_phys = historyPhysicalIndex(cursor, n, j);
+    times[dst_phys] = times[src_phys];
+    mju_copy(values + dst_phys*dim, values + src_phys*dim, dim);
+  }
+  int insert_phys = historyPhysicalIndex(cursor, n, i-1);
+  times[insert_phys] = t;
+  return values + insert_phys*dim;
+}
+
+
+// read vector value at time t; interp: 0=zero-order-hold, 1=linear, 2=cubic spline
+// returns pointer to sample in buffer on exact match or ZOH (res untouched)
+// returns NULL and writes interpolated result to res on interpolation
+const mjtNum* mju_historyRead(const mjtNum* buf, int n, int dim, mjtNum* res, mjtNum t, int interp) {
+  int cursor = (int)buf[1];
+  const mjtNum* times = buf + 2;
+  const mjtNum* values = buf + 2 + n;
+
+  int oldest_phys = historyPhysicalIndex(cursor, n, 0);
+  int newest_phys = historyPhysicalIndex(cursor, n, n-1);
+  mjtNum t_oldest = times[oldest_phys];
+  mjtNum t_newest = times[newest_phys];
+
+  // extrapolate before oldest: return pointer to oldest value
+  if (t <= t_oldest + mjMINVAL) {
+    return values + oldest_phys*dim;
+  }
+
+  // extrapolate after newest: return pointer to newest value
+  if (t >= t_newest - mjMINVAL) {
+    return values + newest_phys*dim;
+  }
+
+  // find bracketing logical index: times[i-1] < t <= times[i]
+  int i = historyFindIndex(times, n, cursor, t);
+  int phys_i = historyPhysicalIndex(cursor, n, i);
+
+  // check for exact match at i
+  if (mju_abs(t - times[phys_i]) < mjMINVAL) {
+    return values + phys_i*dim;
+  }
+
+  // lo = i-1, hi = i (we know i > 0 because t > t_oldest)
+  int phys_lo = historyPhysicalIndex(cursor, n, i-1);
+  int phys_hi = phys_i;
+
+  // zero-order hold: return pointer to lo (most recent sample <= t)
+  if (interp == 0) {
+    return values + phys_lo*dim;
+  }
+
+  mjtNum dt = times[phys_hi] - times[phys_lo];
+  mjtNum alpha = (t - times[phys_lo]) / dt;
+
+  // piecewise linear interpolation
+  if (interp == 1) {
+    for (int d = 0; d < dim; d++) {
+      res[d] = values[phys_lo*dim+d] + alpha * (values[phys_hi*dim+d] - values[phys_lo*dim+d]);
+    }
+  }
+
+  // cubic spline interpolation
+  else {
+    // Hermite basis functions
+    mjtNum alpha2 = alpha * alpha;
+    mjtNum alpha3 = alpha2 * alpha;
+    mjtNum h00 = 2*alpha3 - 3*alpha2 + 1;
+    mjtNum h10 = alpha3 - 2*alpha2 + alpha;
+    mjtNum h01 = -2*alpha3 + 3*alpha2;
+    mjtNum h11 = alpha3 - alpha2;
+
+    for (int d = 0; d < dim; d++) {
+      // finite differenced catmull-rom slopes, 0 at endpoints (constant extrapolation)
+
+      mjtNum m_lo = 0;
+      if (i > 1) {
+        int phys_lo_prev = historyPhysicalIndex(cursor, n, i-2);
+        mjtNum dt_lo = times[phys_hi] - times[phys_lo_prev];
+        m_lo = (values[phys_hi*dim+d] - values[phys_lo_prev*dim+d]) / dt_lo;
+      }
+
+      mjtNum m_hi = 0;
+      if (i < n - 1) {
+        int phys_hi_next = historyPhysicalIndex(cursor, n, i+1);
+        mjtNum dt_hi = times[phys_hi_next] - times[phys_lo];
+        m_hi = (values[phys_hi_next*dim+d] - values[phys_lo*dim+d]) / dt_hi;
+      }
+
+      res[d] = h00 * values[phys_lo*dim+d] +
+               h10 * dt * m_lo +
+               h01 * values[phys_hi*dim+d] +
+               h11 * dt * m_hi;
+    }
+  }
+
+  return NULL;
+}
+
 
 //------------------------------ miscellaneous -----------------------------------------------------
 
@@ -756,6 +1495,12 @@ size_t mju_decodeBase64(uint8_t* buf, const char* s) {
 // the pyramid frame is: V0_i = N + mu_i*T_i
 //                       V1_i = N - mu_i*T_i
 void mju_encodePyramid(mjtNum* pyramid, const mjtNum* force, const mjtNum* mu, int dim) {
+  // special handling of frictionless contacts
+  if (dim == 1) {
+    pyramid[0] = force[0];
+    return;
+  }
+
   mjtNum a = force[0]/(dim-1), b;
 
   // arbitrary redundancy resolution:
@@ -767,7 +1512,6 @@ void mju_encodePyramid(mjtNum* pyramid, const mjtNum* force, const mjtNum* mu, i
     pyramid[2*i+1] = 0.5*(a-b);
   }
 }
-
 
 
 // convert pyramid representation to contact force
@@ -791,23 +1535,30 @@ void mju_decodePyramid(mjtNum* force, const mjtNum* pyramid, const mjtNum* mu, i
 }
 
 
-
 // integrate spring-damper analytically, return pos(t)
 mjtNum mju_springDamper(mjtNum pos0, mjtNum vel0, mjtNum k, mjtNum b, mjtNum t) {
-  mjtNum det, c1, c2, r1, r2, w;
+  mjtNum det, det_tol, c1, c2, r1, r2, w;
 
   // determinant of characteristic equation
   det = b*b - 4*k;
 
+  // scale tolerance with determinant terms to make regime selection invariant to time units
+  det_tol = mjMINVAL * mju_max(b*b, 4*mju_abs(k));
+
   // overdamping
   //  pos(t) = c1*exp(r1*t) + c2*exp(r2*t);  r12 = (-b +- sqrt(det))/2
-  if (det > mjMINVAL) {
+  if (det > det_tol) {
     // compute w = sqrt(det)/2
     w = mju_sqrt(det)/2;
 
-    // compute r1,r2
-    r1 = -b/2 + w;
-    r2 = -b/2 - w;
+    // avoid cancellation: compute the root of larger magnitude, then use r1*r2 = k
+    if (b >= 0) {
+      r2 = -b/2 - w;
+      r1 = k/r2;
+    } else {
+      r1 = -b/2 + w;
+      r2 = k/r1;
+    }
 
     // compute coefficients
     c1 = (pos0*r2-vel0) / (r2-r1);
@@ -819,7 +1570,7 @@ mjtNum mju_springDamper(mjtNum pos0, mjtNum vel0, mjtNum k, mjtNum b, mjtNum t) 
 
   // critical damping
   //  pos(t) = exp(-b*t/2) * (c1 + c2*t)
-  else if (det <= mjMINVAL && det >= -mjMINVAL) {
+  else if (det <= det_tol && det >= -det_tol) {
     // compute coefficients
     c1 = pos0;
     c2 = vel0 + b*c1/2;
@@ -842,7 +1593,6 @@ mjtNum mju_springDamper(mjtNum pos0, mjtNum vel0, mjtNum k, mjtNum b, mjtNum t) 
     return mju_exp(-b*t/2) * (c1*mju_cos(w*t) + c2*mju_sin(w*t));
   }
 }
-
 
 
 // return 1 if point is outside box given by pos, mat, size * inflate
@@ -890,7 +1640,6 @@ int mju_outsideBox(const mjtNum point[3], const mjtNum pos[3], const mjtNum mat[
 }
 
 
-
 // print matrix to screen
 void mju_printMat(const mjtNum* mat, int nr, int nc) {
   for (int r=0; r < nr; r++) {
@@ -901,7 +1650,6 @@ void mju_printMat(const mjtNum* mat, int nr, int nc) {
   }
   printf("\n");
 }
-
 
 
 // print sparse matrix to screen
@@ -918,67 +1666,37 @@ void mju_printMatSparse(const mjtNum* mat, int nr,
 }
 
 
-
 // min function, avoid re-evaluation
 mjtNum mju_min(mjtNum a, mjtNum b) {
-  if (a <= b) {
-    return a;
-  } else {
-    return b;
-  }
+  return a <= b ? a : b;
 }
-
 
 
 // max function, avoid re-evaluation
 mjtNum mju_max(mjtNum a, mjtNum b) {
-  if (a >= b) {
-    return a;
-  } else {
-    return b;
-  }
+  return a >= b ? a : b;
 }
-
 
 
 // clip x to the range [min, max]
 mjtNum mju_clip(mjtNum x, mjtNum min, mjtNum max) {
-  if (x < min) {
-    return min;
-  } else if (x > max) {
-    return max;
-  } else {
-    return x;
-  }
+  return x < min ? min : (x > max ? max : x);
 }
-
 
 
 // sign function
 mjtNum mju_sign(mjtNum x) {
-  if (x < 0) {
-    return -1;
-  } else if (x > 0) {
-    return 1;
-  } else {
-    return 0;
-  }
+  return (x > 0.0) - (x < 0.0);
 }
-
 
 
 // round to nearest integer
 int mju_round(mjtNum x) {
-  mjtNum lower = floor(x);
-  mjtNum upper = ceil(x);
-
-  if (x-lower < upper-x) {
-    return (int)lower;
-  } else {
-    return (int)upper;
-  }
+  double d = (double)x;
+  if (d > INT_MAX) return INT_MAX;
+  if (d < INT_MIN) return INT_MIN;
+  return (int)round(d);
 }
-
 
 
 // convert type id to type name
@@ -1066,7 +1784,6 @@ const char* mju_type2Str(int type) {
     return 0;
   }
 }
-
 
 
 // convert type id to type name
@@ -1171,11 +1888,14 @@ int mju_str2Type(const char* str) {
     return mjOBJ_PLUGIN;
   }
 
+  else if (!strcmp(str, "frame")) {
+    return mjOBJ_FRAME;
+  }
+
   else {
     return mjOBJ_UNKNOWN;
   }
 }
-
 
 
 // return human readable number of bytes using standard letter suffix
@@ -1198,20 +1918,21 @@ const char* mju_writeNumBytes(size_t nbytes) {
 }
 
 
-
 // warning text
 const char* mju_warningText(int warning, size_t info) {
   static mjTHREADLOCAL char str[1000];
 
   switch ((mjtWarning) warning) {
   case mjWARN_INERTIA:
-    mjSNPRINTF(str, "Inertia matrix is too close to singular at DOF %zu. Check model.", info);
+    mjSNPRINTF(str,
+               "Inertia matrix is too close to singular, or the effective-metric solve failed to "
+               "converge, at DOF %zu. Check model.",
+               info);
     break;
 
   case mjWARN_CONTACTFULL:
     mjSNPRINTF(str,
-               "Too many contacts. Either the arena memory is full, or nconmax is specified and is "
-               "exceeded. Increase arena memory allocation, or increase/remove nconmax. "
+               "Too many contacts. The arena memory is full, increase arena memory allocation."
                "(ncon = %zu)", info);
     break;
 
@@ -1219,10 +1940,6 @@ const char* mju_warningText(int warning, size_t info) {
     mjSNPRINTF(str,
                "Insufficient arena memory for the number of constraints generated. "
                "Increase arena memory allocation above %s bytes.", mju_writeNumBytes(info));
-    break;
-
-  case mjWARN_VGEOMFULL:
-    mjSNPRINTF(str, "Pre-allocated visual geom buffer is full. Increase maxgeom above %zu.", info);
     break;
 
   case mjWARN_BADQPOS:
@@ -1250,16 +1967,14 @@ const char* mju_warningText(int warning, size_t info) {
 }
 
 
-
 // return 1 if nan or abs(x)>mjMAXVAL, 0 otherwise
 int mju_isBad(mjtNum x) {
   return (x != x || x > mjMAXVAL || x < -mjMAXVAL);
 }
 
 
-
 // return 1 if all elements are 0
-int mju_isZero(mjtNum* vec, int n) {
+int mju_isZero(const mjtNum* vec, int n) {
   for (int i=0; i < n; i++) {
     if (vec[i] != 0) {
       return 0;
@@ -1270,15 +1985,16 @@ int mju_isZero(mjtNum* vec, int n) {
 }
 
 
+// return 1 if all elements are 0
+int mju_isZeroByte(const unsigned char* vec, int n) {
+  if (!n || *vec) return !n;
+  return memcmp(vec, vec + 1, n - 1) == 0;
+}
+
 
 // set integer vector to 0
 void mju_zeroInt(int* res, int n) {
   memset(res, 0, n*sizeof(int));
-}
-
-
-void mju_zeroSizeT(size_t* res, size_t n) {
-  memset(res, 0, n*sizeof(size_t));
 }
 
 
@@ -1287,7 +2003,12 @@ void mju_copyInt(int* res, const int* vec, int n) {
   memcpy(res, vec, n*sizeof(int));
 }
 
-
+// fill int vector with val
+void mju_fillInt(int* res, int val, int n) {
+  for (int i = 0; i < n; i++) {
+    res[i] = val;
+  }
+}
 
 // standard normal random number generator (optional second number)
 mjtNum mju_standardNormal(mjtNum* num2) {
@@ -1309,14 +2030,12 @@ mjtNum mju_standardNormal(mjtNum* num2) {
 }
 
 
-
 // convert from float to mjtNum
 void mju_f2n(mjtNum* res, const float* vec, int n) {
   for (int i=0; i < n; i++) {
     res[i] = (mjtNum) vec[i];
   }
 }
-
 
 
 // convert from mjtNum to float
@@ -1335,7 +2054,6 @@ void mju_d2n(mjtNum* res, const double* vec, int n) {
 }
 
 
-
 // convert from mjtNum to double
 void mju_n2d(double* res, const mjtNum* vec, int n) {
   for (int i=0; i < n; i++) {
@@ -1343,6 +2061,143 @@ void mju_n2d(double* res, const mjtNum* vec, int n) {
   }
 }
 
+
+// gather: res[i] = vec[ind[i]], or copy if ind is NULL
+void mju_gather(mjtNum* restrict res, const mjtNum* restrict vec, const int* restrict ind, int n) {
+  if (!ind) {
+    mju_copy(res, vec, n);
+    return;
+  }
+
+  for (int i=0; i < n; i++) {
+    res[i] = vec[ind[i]];
+  }
+}
+
+
+// masked gather (set to 0 at negative indices)
+void mju_gatherMasked(mjtNum* restrict res, const mjtNum* restrict vec,
+                      const int* restrict ind, int n) {
+  for (int i=0; i < n; i++) {
+    res[i] = ind[i] >= 0 ? vec[ind[i]] : 0;
+  }
+}
+
+
+// scatter: res[ind[i]] = vec[i], or copy if ind is NULL
+void mju_scatter(mjtNum* restrict res, const mjtNum* restrict vec, const int* restrict ind, int n) {
+  if (!ind) {
+    mju_copy(res, vec, n);
+    return;
+  }
+
+  for (int i=0; i < n; i++) {
+    res[ind[i]] = vec[i];
+  }
+}
+
+
+// gather integers
+void mju_gatherInt(int* restrict res, const int* restrict vec, const int* restrict ind, int n) {
+  for (int i=0; i < n; i++) {
+    res[i] = vec[ind[i]];
+  }
+}
+
+
+// scatter integers
+void mju_scatterInt(int* restrict res, const int* restrict vec, const int* restrict ind, int n) {
+  for (int i=0; i < n; i++) {
+    res[ind[i]] = vec[i];
+  }
+}
+
+
+// build gather indices mapping src to res, assumes pattern(res) \subseteq pattern(src)
+void mju_sparseMap(int* map, int nr,
+                   const int* res_rowadr, const int* res_rownnz, const int* res_colind,
+                   const int* src_rowadr, const int* src_rownnz, const int* src_colind) {
+  for (int i = 0; i < nr; i++) {
+    int res_cursor = res_rowadr[i];
+    int res_end    = res_cursor + res_rownnz[i];
+    int src_cursor = src_rowadr[i];
+    int src_end    = src_cursor + src_rownnz[i];
+
+    while (res_cursor < res_end) {
+      int res_col = res_colind[res_cursor];
+      while (src_cursor < src_end && src_colind[src_cursor] < res_col) {
+        src_cursor++;
+      }
+
+      // found match, set index and advance cursors
+      map[res_cursor++] = src_cursor++;
+    }
+  }
+}
+
+
+// build masked-gather map to copy a lower-triangular src into symmetric res
+//  `cursor` is a preallocated buffer of size `nr`
+void mju_lower2SymMap(int* map, int nr,
+                      const int* res_rowadr, const int* res_rownnz, const int* res_colind,
+                      const int* src_rowadr, const int* src_rownnz, const int* src_colind,
+                      int* cursor) {
+  if (!nr) return;
+
+  // default all map entries to "no source"
+  int nnz = res_rowadr[nr-1] + res_rownnz[nr-1];
+  mju_fillInt(map, -1, nnz);
+
+  // initialize per-row cursor
+  for (int i = 0; i < nr; i++) {
+    cursor[i] = res_rowadr[i];
+  }
+
+  // sweep src rows; for each lower (i,j) set res(i,j) and res(j,i)
+  for (int i = 0; i < nr; i++) {
+    int src_start = src_rowadr[i];
+    int src_end   = src_start + src_rownnz[i];
+
+    // sweep src row
+    for (int k = src_start; k < src_end; k++) {
+      int j = src_colind[k];
+      if (j > i) break;  // use only lower triangle of src
+
+      // --- lower triangle: res(i, j)
+      int res_start = res_rowadr[i];
+      int res_end   = res_start + res_rownnz[i];
+      int c         = cursor[i];
+
+      // increment c until there is a match
+      while (c < res_end && res_colind[c] < j) c++;
+
+      // found match, set index, advance and save cursor
+      if (c < res_end && res_colind[c] == j) {
+        map[c] = k;
+        c++;
+      }
+      cursor[i] = c;
+
+
+      // --- upper mirror: res(j, i)
+      if (j != i) {
+        res_start = res_rowadr[j];
+        res_end   = res_start + res_rownnz[j];
+        c         = cursor[j];
+
+        // increment c until there is a match
+        while (c < res_end && res_colind[c] < i) c++;
+
+        // found match, set index and advance and save cursor
+        if (c < res_end && res_colind[c] == i) {
+          map[c] = k;
+          c++;
+        }
+        cursor[j] = c;
+      }
+    }
+  }
+}
 
 
 // insertion sort, increasing order
@@ -1359,7 +2214,6 @@ void mju_insertionSort(mjtNum* list, int n) {
 }
 
 
-
 // integer insertion sort, increasing order
 void mju_insertionSortInt(int* list, int n) {
   for (int i=1; i < n; i++) {
@@ -1372,7 +2226,6 @@ void mju_insertionSortInt(int* list, int n) {
     list[j+1] = x;
   }
 }
-
 
 
 // Halton sequence
@@ -1393,7 +2246,6 @@ mjtNum mju_Halton(int index, int base) {
 }
 
 
-
 // Call strncpy, then set dst[n-1] = 0.
 char* mju_strncpy(char *dst, const char *src, int n) {
   if (dst && src && n > 0) {
@@ -1404,6 +2256,52 @@ char* mju_strncpy(char *dst, const char *src, int n) {
   return dst;
 }
 
+
+// polynomial force coefficient: force = -x * mju_polyForce(...)
+//   flg_odd=0: linear + poly[0]*x   + poly[1]*x^2 + ...
+//   flg_odd=1: linear + poly[0]*|x| + poly[1]*x^2 + ...  (p is even, p*x is odd)
+mjtNum mju_polyForce(mjtNum linear, const mjtNum* poly, mjtNum x, int n, int flg_odd) {
+  x = flg_odd ? mju_abs(x) : x;
+  mjtNum res = linear;
+
+  mjtNum xpow = 1;
+  for (int i=0; i < n; i++) {
+    xpow *= x;
+    res += poly[i] * xpow;
+  }
+
+  return res;
+}
+
+
+// derivative of (x * mju_polyForce) w.r.t. x
+mjtNum mjd_xPolyForce(mjtNum linear, const mjtNum* poly, mjtNum x, int n, int flg_odd) {
+  x = flg_odd ? mju_abs(x) : x;
+  mjtNum res = linear;
+
+  mjtNum xpow = 1;
+  for (int i=0; i < n; i++) {
+    xpow *= x;
+    res += (i+2) * poly[i] * xpow;
+  }
+
+  return res;
+}
+
+
+// potential energy: integral from 0 to x of mju_polyForce(t) * t dt
+mjtNum mju_polyPotential(mjtNum linear, const mjtNum* poly, mjtNum x, int n, int flg_odd) {
+  x = flg_odd ? mju_abs(x) : x;
+  mjtNum res = 0.5 * linear * (x * x);
+
+  mjtNum xpow = x;
+  for (int i=0; i < n; i++) {
+    xpow *= x;
+    res += poly[i] / (i+3) * (xpow * x);
+  }
+
+  return res;
+}
 
 
 // sigmoid function over 0<=x<=1 using quintic polynomial

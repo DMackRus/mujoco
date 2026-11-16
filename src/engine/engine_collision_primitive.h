@@ -18,62 +18,67 @@
 #include <mujoco/mjdata.h>
 #include <mujoco/mjexport.h>
 #include <mujoco/mjmodel.h>
-
-// define and extract geom info
-#define mjGETINFO \
-    const mjtNum* pos1  = d->geom_xpos + 3*g1; \
-    const mjtNum* mat1  = d->geom_xmat + 9*g1; \
-    const mjtNum* size1 = m->geom_size + 3*g1; \
-    const mjtNum* pos2  = d->geom_xpos + 3*g2; \
-    const mjtNum* mat2  = d->geom_xmat + 9*g2; \
-    const mjtNum* size2 = m->geom_size + 3*g2; \
-    (void) size1; (void) size2;  // size1 and size2 are sometimes unused
+#include <mujoco/mjtype.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+// compute the barycentric weights w of the closest point on triangle ABC to p
+void mjc_triWeights(mjtNum w[3], const mjtNum p[3], const mjtNum a[3], const mjtNum b[3],
+                    const mjtNum c[3]);
+
+// compute the barycentric weights w = {s1, t1, s2, t2} in [0, 1] of the closest points
+// A + s*(B - A) on segment AB and C + t*(D - C) on segment CD;
+// return the number of closest point pairs (1, or 2 if parallel)
+int mjc_segWeights(mjtNum w[4], const mjtNum a[3], const mjtNum b[3], const mjtNum c[3],
+                   const mjtNum d[3]);
+
+
 // raw collision functions (called by mjc_XXX)
-int mjraw_SphereCapsule (mjContact* con, mjtNum margin,
-                         const mjtNum* pos1, const mjtNum* mat1, const mjtNum* size1,
-                         const mjtNum* pos2, const mjtNum* mat2, const mjtNum* size2);
-int mjraw_CapsuleCapsule(mjContact* con, mjtNum margin,
-                         const mjtNum* pos1, const mjtNum* mat1, const mjtNum* size1,
-                         const mjtNum* pos2, const mjtNum* mat2, const mjtNum* size2);
-int mjraw_CapsuleBox    (mjContact* con, mjtNum margin,
-                         const mjtNum* pos1, const mjtNum* mat1, const mjtNum* size1,
-                         const mjtNum* pos2, const mjtNum* mat2, const mjtNum* size2);
-int mjraw_SphereTriangle(mjContact* con, mjtNum margin,
-                         const mjtNum* s, mjtNum rs,
-                         const mjtNum* t1, const mjtNum* t2, const mjtNum* t3, mjtNum rt);
+int mjraw_SphereCapsule(mjPreContact* con, mjtNum margin, const mjtNum* pos1, const mjtNum* mat1,
+                        const mjtNum* size1, const mjtNum* pos2, const mjtNum* mat2,
+                        const mjtNum* size2);
+int mjraw_CapsuleCapsule(mjPreContact* con, mjtNum margin, const mjtNum* pos1, const mjtNum* mat1,
+                         const mjtNum* size1, const mjtNum* pos2, const mjtNum* mat2,
+                         const mjtNum* size2);
+int mjraw_CapsuleBox(mjPreContact* con, mjtNum margin, const mjtNum* pos1, const mjtNum* mat1,
+                     const mjtNum* size1, const mjtNum* pos2, const mjtNum* mat2,
+                     const mjtNum* size2);
+int mjraw_SphereBox(mjPreContact* con, mjtNum margin, const mjtNum* pos1, const mjtNum* mat1,
+                    const mjtNum* size1, const mjtNum* pos2, const mjtNum* mat2,
+                    const mjtNum* size2);
+int mjraw_BoxBox(mjPreContact* con, mjtNum margin, const mjtNum* pos1, const mjtNum* mat1,
+                 const mjtNum* size1, const mjtNum* pos2, const mjtNum* mat2,
+                 const mjtNum* size2);
 
 // plane collisions
-MJAPI int mjc_PlaneSphere     (const mjModel* m, const mjData* d,
-                               mjContact* con, int g1, int g2, mjtNum margin);
-MJAPI int mjc_PlaneCapsule    (const mjModel* m, const mjData* d,
-                               mjContact* con, int g1, int g2, mjtNum margin);
-MJAPI int mjc_PlaneCylinder   (const mjModel* m, const mjData* d,
-                               mjContact* con, int g1, int g2, mjtNum margin);
-MJAPI int mjc_PlaneBox        (const mjModel* m, const mjData* d,
-                               mjContact* con, int g1, int g2, mjtNum margin);
+MJAPI int mjc_PlaneSphere(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2,
+                          mjtNum margin);
+MJAPI int mjc_PlaneCapsule(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2,
+                           mjtNum margin);
+MJAPI int mjc_PlaneCylinder(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2,
+                            mjtNum margin);
+MJAPI int mjc_PlaneBox(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2,
+                       mjtNum margin);
 
 // sphere and capsule collisions
-MJAPI int mjc_SphereSphere    (const mjModel* m, const mjData* d,
-                               mjContact* con, int g1, int g2, mjtNum margin);
-MJAPI int mjc_SphereCapsule   (const mjModel* m, const mjData* d,
-                               mjContact* con, int g1, int g2, mjtNum margin);
-MJAPI int mjc_SphereCylinder  (const mjModel* m, const mjData* d,
-                               mjContact* con, int g1, int g2, mjtNum margin);
-MJAPI int mjc_CapsuleCapsule  (const mjModel* m, const mjData* d,
-                               mjContact* con, int g1, int g2, mjtNum margin);
+MJAPI int mjc_SphereSphere(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2,
+                            mjtNum margin);
+MJAPI int mjc_SphereCapsule(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2,
+                            mjtNum margin);
+MJAPI int mjc_SphereCylinder(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2,
+                             mjtNum margin);
+MJAPI int mjc_CapsuleCapsule(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2,
+                             mjtNum margin);
 
 // box collisions: from engine_collision_box.c
-MJAPI int mjc_CapsuleBox      (const mjModel* m, const mjData* d,
-                               mjContact* con, int g1, int g2, mjtNum margin);
-MJAPI int mjc_SphereBox       (const mjModel* m, const mjData* d,
-                               mjContact* con, int g1, int g2, mjtNum margin);
-MJAPI int mjc_BoxBox          (const mjModel* m, const mjData* d,
-                               mjContact* con, int g1, int g2, mjtNum margin);
+MJAPI int mjc_CapsuleBox(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2,
+                         mjtNum margin);
+MJAPI int mjc_SphereBox(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2,
+                        mjtNum margin);
+MJAPI int mjc_BoxBox(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2,
+                     mjtNum margin);
 
 #ifdef __cplusplus
 }

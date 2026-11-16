@@ -28,29 +28,29 @@ MJAPI void mjp_defaultPlugin(mjpPlugin* plugin);
 // globally register a plugin (thread-safe), return new slot id
 MJAPI int mjp_registerPlugin(const mjpPlugin* plugin);
 
-// globally register a resource provider (thread-safe), return new slot id
-MJAPI int mjp_registerResourceProvider(const mjpResourceProvider* provider);
+// globally register a provider (thread-safe), return new slot id
+MJAPI int mjp_registerProvider(const mjpResourceProvider* provider);
 
 // return the number of globally registered plugins
 MJAPI int mjp_pluginCount(void);
 
-// return the number of globally registered resource providers
-MJAPI int mjp_resourceProviderCount(void);
+// return the number of globally registered providers
+MJAPI int mjp_providerCount(void);
 
 // look up a plugin by name, optionally also get its registered slot number
 MJAPI const mjpPlugin* mjp_getPlugin(const char* name, int* slot);
 
-// set default resource provider definition
-MJAPI void mjp_defaultResourceProvider(mjpResourceProvider* provider);
+// set default provider definition
+MJAPI void mjp_defaultProvider(mjpResourceProvider* provider);
 
-// look up a resource provider that matches its prefix against the given resource name
-MJAPI const mjpResourceProvider* mjp_getResourceProvider(const char* resource_name);
+// look up a provider that matches its prefix against the given resource name
+MJAPI const mjpResourceProvider* mjp_findProvider(const char* resource_name);
 
 // look up a plugin by slot number
 MJAPI const mjpPlugin* mjp_getPluginAtSlot(int slot);
 
-// look up a resource provider by slot number
-MJAPI const mjpResourceProvider* mjp_getResourceProviderAtSlot(int slot);
+// look up a provider by slot number
+MJAPI const mjpResourceProvider* mjp_getProviderAtSlot(int slot);
 
 // return a config attribute of a plugin instance
 // NULL: invalid plugin instance ID or attribute name
@@ -62,6 +62,34 @@ MJAPI void mj_loadPluginLibrary(const char* path);
 // scan a directory and load all dynamic libraries
 MJAPI void mj_loadAllPluginLibraries(const char* directory, mjfPluginLibraryLoadCallback callback);
 
+// registers a resource decoder
+MJAPI void mjp_registerDecoder(const mjpDecoder* decoder);
+
+// set default decoder definition
+MJAPI void mjp_defaultDecoder(mjpDecoder* decoder);
+
+// find a decoder that can process a given resource
+MJAPI const mjpDecoder* mjp_findDecoder(const mjResource* resource, const char* content_type);
+
+// registers a resource encoder
+MJAPI void mjp_registerEncoder(const mjpEncoder* encoder);
+
+// set default encoder definition
+MJAPI void mjp_defaultEncoder(mjpEncoder* encoder);
+
+// find an encoder that can write a given format
+MJAPI const mjpEncoder* mjp_findEncoder(const char* filename, const char* content_type);
+
+// registers an archive provider
+MJAPI void mjp_registerArchiveProvider(const mjpResourceProvider* provider);
+
+// find an archive provider that matches a given name
+MJAPI const mjpResourceProvider* mjp_findArchiveProvider(const char* resource_name);
+
+// return the number of globally registered archive providers
+MJAPI int mjp_archiveProviderCount(void);
+
+
 // =================================================================================================
 // MuJoCo-internal functions beyond this point.
 // "Unsafe" suffix indicates that improper use of these functions may result in data races.
@@ -70,8 +98,8 @@ MJAPI void mj_loadAllPluginLibraries(const char* directory, mjfPluginLibraryLoad
 // up to `count` have been completely written into the global table.
 // =================================================================================================
 
-// internal version of mjp_registerResourceProvider without prechecks on reserved prefixes
-MJAPI int mjp_registerResourceProviderInternal(const mjpResourceProvider* provider);
+// internal version of mjp_registerProvider without prechecks on reserved prefixes
+MJAPI int mjp_registerProviderInternal(const mjpResourceProvider* provider);
 
 // look up a plugin by name, assuming that mjp_pluginCount has already been called
 const mjpPlugin* mjp_getPluginUnsafe(const char* name, int* slot, int nslot);
