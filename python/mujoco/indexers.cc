@@ -103,6 +103,7 @@ py::array_t<T> MakeArray(T* base_ptr, int index, std::vector<int>&& shape,
     shape.insert(shape.begin(), m.hfield_nrow[index]);
   } else if (MjSize == &raw::MjModel::ntexdata) {
     offset = m.tex_adr[index];
+    shape.insert(shape.begin(), m.tex_nchannel[index]);
     shape.insert(shape.begin(), m.tex_width[index]);
     shape.insert(shape.begin(), m.tex_height[index]);
   } else if (MjSize == &raw::MjModel::nsensordata) {
@@ -260,7 +261,7 @@ MJDATA_VIEW_GROUPS
     if constexpr (std::string_view(#dim) == std::string_view("1")) { \
       return {};                                                     \
     } else {                                                         \
-      return {n};                                                    \
+      return {(int)n};                                               \
     }                                                                \
   }()                                                                \
   MUJOCO_DIAG_UNIGNORE_UNUSED_LAMBDA_CAPTURE

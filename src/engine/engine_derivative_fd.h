@@ -33,7 +33,7 @@ MJAPI void mjd_passive_velFD(const mjModel* m, mjData* d, mjtNum eps);
 MJAPI void mj_stepSkip(const mjModel* m, mjData* d, int skipstage, int skipsensor);
 
 // finite differenced transition matrices (control theory notation)
-MJAPI void mjd_transitionFD(const mjModel* m, mjData* d, mjtNum eps, mjtByte centered,
+MJAPI void mjd_transitionFD(const mjModel* m, mjData* d, mjtNum eps, mjtBool centered,
                             mjtNum* A, mjtNum* B, mjtNum* C, mjtNum* D);
 
 // finite differenced transition matrices (control theory notation) for a subset of specified columns
@@ -41,7 +41,7 @@ MJAPI void mjd_transitionFD_columns(const mjModel* m, mjData* d, mjtNum eps, mjt
                                     mjtNum* A, mjtNum* B, mjtNum* C, mjtNum* D, int *columns, int num_columns);
 
 // finite differenced Jacobian of  (force, sensors) = mj_inverse(state, acceleration)
-MJAPI void mjd_inverseFD(const mjModel* m, mjData* d, mjtNum eps, mjtByte flg_actuation,
+MJAPI void mjd_inverseFD(const mjModel* m, mjData* d, mjtNum eps, mjtBool flg_actuation,
                          mjtNum *DfDq, mjtNum *DfDv, mjtNum *DfDa,
                          mjtNum *DsDq, mjtNum *DsDv, mjtNum *DsDa,
                          mjtNum *DmDq);

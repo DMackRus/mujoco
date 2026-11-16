@@ -15,12 +15,18 @@
 #ifndef MUJOCO_SRC_USER_USER_UTIL_H_
 #define MUJOCO_SRC_USER_USER_UTIL_H_
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
+
+#include <mujoco/mjexport.h>
 
 const double mjEPS = 1E-14;     // minimum value in various calculations
 const double mjMINMASS = 1E-6;  // minimum mass allowed
@@ -46,9 +52,7 @@ void mjuu_setvec(double* dest, double x, double y);
 // copy real-valued vector
 template <class T1, class T2>
 void mjuu_copyvec(T1* dest, const T2* src, int n) {
-  for (int i=0; i<n; i++) {
-    dest[i] = (T1)src[i];
-  }
+  std::copy(src, src + n, dest);
 }
 
 // add to double array
@@ -73,6 +77,9 @@ double mjuu_L1(const double* a, const double* b, int n);
 //  if norm(vec)<mjEPS, return 0 and do not change vector
 double mjuu_normvec(double* vec, int n);
 float mjuu_normvec(float* vec, int n);
+
+// scale vector by scalar
+void mjuu_scalevec(double* res, const double* vec, double s, int n);
 
 // convert quaternion to rotation matrix
 void mjuu_quat2mat(double* res, const double* quat);
@@ -107,8 +114,9 @@ void mjuu_localquat(double* local, const double* child, const double* parent);
 // compute vector cross-product a = b x c
 void mjuu_crossvec(double* a, const double* b, const double* c);
 
-// compute normal vector to given triangle (uses float for OpenGL)
-double mjuu_makenormal(double* normal, const float* a, const float* b, const float* c);
+// compute normal vector to given triangle
+template<typename T> double mjuu_makenormal(double* normal, const T a[3],
+                                            const T b[3], const T c[3]);
 
 // compute quaternion corresponding to minimal rotation from [0;0;1] to vec
 void mjuu_z2quat(double* quat, const double* vec);
@@ -151,6 +159,12 @@ double mjuu_updateFrame(double quat[4], double normal[3], const double edge[3],
 // eigenvalue decomposition of symmetric 3x3 matrix
 int mjuu_eig3(double eigval[3], double eigvec[9], double quat[4], const double mat[9]);
 
+// Jacobi eigenvalue decomposition of symmetric n×n matrix
+// eigval[n]: output eigenvalues, eigvec[n*n]: output eigenvectors (columns)
+// mat[n*n]: input matrix (destroyed on output)
+// returns number of sweeps used
+MJAPI int mjuu_eigendecompose(double* mat, double* eigval, double* eigvec, int n);
+
 // transform vector by pose
 void mjuu_trnVecPose(double res[3], const double pos[3], const double quat[4], const double vec[3]);
 
@@ -160,7 +174,7 @@ const char* mjuu_fullInertia(double quat[4], double inertia[3], const double ful
 namespace mujoco::user {
 
 // utility class for handling file paths
-class FilePath {
+class MJAPI FilePath {
  public:
   FilePath() = default;
   explicit FilePath(const std::string& str) : path_(PathReduce(str)) {}
@@ -211,7 +225,7 @@ class FilePath {
  private:
   static std::string AbsPrefix(const std::string& str);
   static std::string PathReduce(const std::string& str);
-  static bool IsSeperator(char c) {
+  static bool IsSeparator(char c) {
     return c == '/' || c == '\\';
   }
   static std::string Combine(const std::string& s1, const std::string& s2);
@@ -232,15 +246,26 @@ class FilePath {
   std::string path_;
 };
 
+// utility class for scoping resources to functions
+struct Cleanup {
+  using Fn = std::function<void()>;
+  ~Cleanup() { for (auto& f : cleanup) f(); }
+  void operator+=(Fn f) { cleanup.push_front(std::move(f)); }
+  std::deque<Fn> cleanup;
+};
+
+
 // read file into memory buffer
 std::vector<uint8_t> FileToMemory(const char* filename);
 
 // convert vector to string separating elements by whitespace
-template<typename T> std::string VectorToString(const std::vector<T>& v);
+template<typename T> MJAPI std::string VectorToString(const std::vector<T>& v);
 
 // convert string to vector
-template<typename T> std::vector<T> StringToVector(char *cs);
-template<typename T> std::vector<T> StringToVector(const std::string& s);
+template<typename T> MJAPI std::vector<T> StringToVector(char *cs);
+template<typename T> MJAPI std::vector<T> StringToVector(const std::string& s);
+template<> MJAPI std::vector<std::string> StringToVector(char* cs);
+template<> MJAPI std::vector<std::string> StringToVector(const std::string& s);
 
 }  // namespace mujoco::user
 

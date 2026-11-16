@@ -57,13 +57,20 @@ PYBIND11_MODULE(_constants, pymodule) {
   X(mjMINIMP);
   X(mjMAXIMP);
   X(mjMAXCONPAIR);
+  X(mjMAXTREEDEPTH);
+  X(mjMAXFLEXNODES);
+  X(mjMINAWAKE);
   X(mjNEQDATA);
   X(mjNDYN);
   X(mjNGAIN);
   X(mjNBIAS);
+  X(mjNFLUID);
   X(mjNREF);
   X(mjNIMP);
+  X(mjNSENS);
   X(mjNSOLVER);
+  X(mjNISLAND);
+  X(mjNPOLY);
 
   // from mjvisualize.h
   X(mjNGROUP);
@@ -76,7 +83,7 @@ PYBIND11_MODULE(_constants, pymodule) {
   // from mujoco.h
   X(mjVERSION_HEADER);
 
-  // from mjtnum.h
+  // from mjtype.h
   X(mjMINVAL);
 
   #undef X

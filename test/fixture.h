@@ -16,11 +16,17 @@
 #define MUJOCO_TEST_FIXTURE_H_
 
 #include <csetjmp>
+#include <cstdio>  // IWYU pragma: keep
+#include <cstdlib>  // IWYU pragma: keep
 #include <cstring>
+#include <iomanip>
+#include <iostream>
+#include <mutex>  // IWYU pragma: keep
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
@@ -33,6 +39,48 @@ MJAPI decltype(mju_user_error)  _mjPRIVATE__get_tls_error_fn();
 }
 
 namespace mujoco {
+
+// Precision-aware GMock matcher. Use instead of DoubleNear/FloatNear.
+// Under double builds, uses double_tol. Under float builds, uses float_tol.
+template <typename T1, typename T2>
+inline auto MjNear(T1 double_tol, T2 float_tol) {
+#ifdef mjUSESINGLE
+  return ::testing::FloatNear(static_cast<float>(float_tol));
+#else
+  return ::testing::DoubleNear(static_cast<double>(double_tol));
+#endif
+}
+
+// Precision-aware GMock matcher (3-arg version).
+// Under double builds, matches near target with double_tol.
+// Under float builds, matches near target with float_tol.
+template <typename T1, typename T2, typename T3>
+inline auto MjNear(T1 target, T2 double_tol, T3 float_tol) {
+#ifdef mjUSESINGLE
+  return ::testing::FloatNear(static_cast<float>(target),
+                              static_cast<float>(float_tol));
+#else
+  return ::testing::DoubleNear(static_cast<double>(target),
+                               static_cast<double>(double_tol));
+#endif
+}
+
+// Precision-aware tolerance for EXPECT_NEAR.
+template <typename T1, typename T2>
+constexpr mjtNum MjTol(T1 double_tol, T2 float_tol) {
+#ifdef mjUSESINGLE
+  return static_cast<mjtNum>(float_tol);
+#else
+  return static_cast<mjtNum>(double_tol);
+#endif
+}
+
+// Precision-aware equality assertion: 4 ULPs in either precision.
+#ifdef mjUSESINGLE
+  #define EXPECT_MJTNUM_EQ(a, b) EXPECT_FLOAT_EQ(a, b)
+#else
+  #define EXPECT_MJTNUM_EQ(a, b) EXPECT_DOUBLE_EQ(a, b)
+#endif
 
 // Installs and uninstalls error callbacks on MuJoCo that fail the currently
 // running test if triggered. Prefer the use of MujocoTest, unless using a
@@ -51,6 +99,24 @@ class MujocoErrorTestGuard {
 // By default, any MuJoCo operation which triggers a warning or error will
 // trigger a test failure.
 class MujocoTest : public ::testing::Test {
+ public:
+  MujocoTest() {
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+      const char* plugin_dir = std::getenv("MUJOCO_PLUGIN_DIR");
+      if (plugin_dir) {
+        mj_loadAllPluginLibraries(
+          plugin_dir, +[](const char* filename, int first, int count) {
+            std::printf("Plugins registered by library '%s':\n", filename);
+            for (int i = first; i < first + count; ++i) {
+              std::printf("    %s\n", mjp_getPluginAtSlot(i)->name);
+            }
+          });
+      }
+    });
+  }
+  ~MujocoTest() { mj_freeLastXML(); }
+
  private:
   MujocoErrorTestGuard error_guard;
 };
@@ -97,6 +163,9 @@ mjModel* LoadModelFromPath(const char* model_path);
 // Returns a string loaded from first saving the model given an input.
 std::string SaveAndReadXml(const mjModel* model);
 
+// Returns a string loaded from first saving the spec given an input.
+std::string SaveAndReadXml(const mjSpec* spec);
+
 // Adds control noise.
 std::vector<mjtNum> GetCtrlNoise(const mjModel* m, int nsteps,
                                  mjtNum ctrlnoise = 0.01);
@@ -106,8 +175,28 @@ std::vector<mjtNum> GetCtrlNoise(const mjModel* m, int nsteps,
 mjtNum CompareModel(const mjModel* m1, const mjModel* m2, std::string& field);
 
 // Returns a vector containing the elements of the array.
-inline std::vector<mjtNum> AsVector(const mjtNum* array, int n) {
-  return std::vector<mjtNum>(array, array + n);
+template <typename T>
+std::vector<T> AsVector(const T* array, int n) {
+  return std::vector<T>(array, array + n);
+}
+
+// Prints a matrix to stderr, useful for debugging.
+inline void PrintMatrix(const mjtNum* mat, int nrow, int ncol, int p = 5,
+                        std::string_view name = "") {
+  std::cerr.precision(p);
+  std::cerr << name << "\n";
+  for (int r = 0; r < nrow; r++) {
+    for (int c = 0; c < ncol; c++) {
+      mjtNum val = mat[c + r*ncol];
+      if (val) {
+        std::cerr << std::fixed << std::setw(5 + p) << val << " ";
+      } else {
+        // don't print exact zeros
+        std::cerr << std::string(6 + p, ' ');
+      }
+    }
+    std::cerr << "\n";
+  }
 }
 
 // Installs a mock filesystem via a resource provider. To obtain thread safety,
@@ -155,20 +244,6 @@ class MockFilesystem {
   std::string dir_;  // current directory
 };
 
-// Installs all plugins
-class PluginTest : public MujocoTest {
- public:
-  // load plugin library
-  PluginTest() : MujocoTest() {
-    mj_loadAllPluginLibraries(
-      std::string(std::getenv("MUJOCO_PLUGIN_DIR")).c_str(), +[](const char* filename, int first, int count) {
-        std::printf("Plugins registered by library '%s':\n", filename);
-        for (int i = first; i < first + count; ++i) {
-          std::printf("    %s\n", mjp_getPluginAtSlot(i)->name);
-        }
-      });
-  }
-};
 
 }  // namespace mujoco
 #endif  // MUJOCO_TEST_FIXTURE_H_

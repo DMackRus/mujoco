@@ -132,6 +132,8 @@ def _nvmap(f: Callable[..., Y], *args) -> Y:
 
 def _check_input(m: Model, args: Any, in_types: str) -> None:
   """Checks that scan input has the right shape."""
+  if m.nv == 0:
+    raise ValueError('Scan across Model with zero DoFs unsupported.')
   size = {
       'b': m.nbody,
       'j': m.njnt,
@@ -144,13 +146,11 @@ def _check_input(m: Model, args: Any, in_types: str) -> None:
   }
   for idx, (arg, typ) in enumerate(zip(args, in_types)):
     if len(arg) != size[typ]:
-      raise IndexError(
-          (
-              f'f argument "{idx}" with type "{typ}" has length "{len(arg)}"'
-              f' which does not match the in_types[{idx}] expected length of '
-              f'"{size[typ]}".'
-          )
-      )
+      raise IndexError((
+          f'f argument "{idx}" with type "{typ}" has length "{len(arg)}"'
+          f' which does not match the in_types[{idx}] expected length of '
+          f'"{size[typ]}".'
+      ))
 
 
 def _check_output(
@@ -158,13 +158,11 @@ def _check_output(
 ) -> None:
   """Checks that scan output has the right shape."""
   if y.shape[0] != take_ids.shape[0]:
-    raise IndexError(
-        (
-            f'f output "{idx}" with type "{typ}" has shape "{y.shape[0]}" '
-            f'which does not match the out_types[{idx}] expected size of'
-            f' "{take_ids.shape[0]}".'
-        )
-    )
+    raise IndexError((
+        f'f output "{idx}" with type "{typ}" has shape "{y.shape[0]}" '
+        f'which does not match the out_types[{idx}] expected size of'
+        f' "{take_ids.shape[0]}".'
+    ))
 
 
 def flat(
@@ -400,7 +398,7 @@ def body_tree(
       if t == 'b':
         continue
       elif t == 'j':
-        key += (tuple(m.jnt_type[np.nonzero(m.jnt_bodyid == id_)[0]]))
+        key += tuple(m.jnt_type[np.nonzero(m.jnt_bodyid == id_)[0]])
       elif t == 'v':
         key += (len(np.nonzero(m.dof_bodyid == id_)[0]),)
       elif t == 'q':

@@ -15,11 +15,11 @@
 # Build configuration for third party libraries used in MuJoCo.
 
 set(MUJOCO_DEP_VERSION_lodepng
-    b4ed2cd7ecf61d29076169b49199371456d4f90b
+    17d08dd26cac4d63f43af217ebd70318bfb8189c
     CACHE STRING "Version of `lodepng` to be fetched."
 )
 set(MUJOCO_DEP_VERSION_tinyxml2
-    9a89766acc42ddfa9e7133c7d81a5bda108a0ade
+    e6caeae85799003f4ca74ff26ee16a789bc2af48
     CACHE STRING "Version of `tinyxml2` to be fetched."
 )
 set(MUJOCO_DEP_VERSION_tinyobjloader
@@ -35,32 +35,31 @@ set(MUJOCO_DEP_VERSION_ccd
     CACHE STRING "Version of `ccd` to be fetched."
 )
 set(MUJOCO_DEP_VERSION_qhull
-    0c8fc90d2037588024d9964515c1e684f6007ecc
+    62ccc56af071eaa478bef6ed41fd7a55d3bb2d80
     CACHE STRING "Version of `qhull` to be fetched."
 )
+set(MUJOCO_DEP_VERSION_miniz
+    d10b03cc73475af673df40f06e5cefd1d5f940d9
+    CACHE STRING "Version of `miniz` to be fetched."
+)
 set(MUJOCO_DEP_VERSION_Eigen3
-    b396a6fbb2e173f52edb3360485dedf3389ef830
+    ea13a98decd497a8c5588fb5de71b57bcf10d864
     CACHE STRING "Version of `Eigen3` to be fetched."
 )
 
 set(MUJOCO_DEP_VERSION_abseil
-    4447c7562e3bc702ade25105912dce503f0c4010 # LTS 20240722.0
+    255c84dadd029fd8ad25c5efb5933e47beaa00c7 # LTS 20250814.1
     CACHE STRING "Version of `abseil` to be fetched."
 )
 
 set(MUJOCO_DEP_VERSION_gtest
-    b514bdc898e2951020cbdca1304b75f5950d1f59 # v1.15.2
+    52eb8108c5bdec04579160ae17225d66034bd723 # v1.17.0
     CACHE STRING "Version of `gtest` to be fetched."
 )
 
 set(MUJOCO_DEP_VERSION_benchmark
-    7c8ed6b082aa3c7a3402f18e50da4480421d08fd # v1.8.4
+    834a61fc65e8b7885fcf177f1230ae4b897118fa
     CACHE STRING "Version of `benchmark` to be fetched."
-)
-
-set(MUJOCO_DEP_VERSION_sdflib
-    1927bee6bb8225258a39c8cbf14e18a4d50409ae
-    CACHE STRING "Version of `SdfLib` to be fetched."
 )
 
 mark_as_advanced(MUJOCO_DEP_VERSION_lodepng)
@@ -73,7 +72,6 @@ mark_as_advanced(MUJOCO_DEP_VERSION_Eigen3)
 mark_as_advanced(MUJOCO_DEP_VERSION_abseil)
 mark_as_advanced(MUJOCO_DEP_VERSION_gtest)
 mark_as_advanced(MUJOCO_DEP_VERSION_benchmark)
-mark_as_advanced(MUJOCO_DEP_VERSION_sdflib)
 
 include(FetchContent)
 include(FindOrFetch)
@@ -106,7 +104,11 @@ if(NOT TARGET lodepng)
     add_library(lodepng STATIC ${LODEPNG_HEADERS} ${LODEPNG_SRCS})
     target_compile_options(lodepng PRIVATE ${MUJOCO_MACOS_COMPILE_OPTIONS})
     target_link_options(lodepng PRIVATE ${MUJOCO_MACOS_LINK_OPTIONS})
-    target_include_directories(lodepng PUBLIC ${lodepng_SOURCE_DIR})
+    if(NOT EMSCRIPTEN)
+      target_include_directories(lodepng PUBLIC ${lodepng_SOURCE_DIR})
+    else()
+      target_include_directories(lodepng PUBLIC  $<BUILD_INTERFACE:${lodepng_SOURCE_DIR}> $<INSTALL_INTERFACE:include>)
+    endif()
   endif()
 endif()
 
@@ -125,6 +127,10 @@ if(NOT TARGET marchingcubecpp)
 endif()
 
 set(QHULL_ENABLE_TESTING OFF)
+# Patch changes in https://github.com/qhull/qhull/pull/173.patch
+set(QHULL_PATCH_COMMAND
+  git apply --reject --whitespace=fix ${mujoco_SOURCE_DIR}/cmake/qhull-support-emscripten.patch
+)
 
 findorfetch(
   USE_SYSTEM_PACKAGE
@@ -140,6 +146,7 @@ findorfetch(
   TARGETS
   qhull
   EXCLUDE_FROM_ALL
+  PATCH_COMMAND ${QHULL_PATCH_COMMAND}
 )
 # MuJoCo includes a file from libqhull_r which is not exported by the qhull include directories.
 # Add it to the target.
@@ -168,6 +175,11 @@ findorfetch(
 target_compile_options(tinyxml2 PRIVATE ${MUJOCO_MACOS_COMPILE_OPTIONS})
 target_link_options(tinyxml2 PRIVATE ${MUJOCO_MACOS_LINK_OPTIONS})
 
+# update cmake_minimum_required version for compatibility with newer version of cmake
+if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+  set(CMAKE_POLICY_VERSION_MINIMUM ${MUJOCO_CMAKE_MIN_REQ})
+  set(CMAKE_POLICY_VERSION_MINIMUM_LOCALLY_DEFINED ON)
+endif()
 findorfetch(
   USE_SYSTEM_PACKAGE
   OFF
@@ -183,30 +195,24 @@ findorfetch(
   tinyobjloader
   EXCLUDE_FROM_ALL
 )
-
-option(SDFLIB_USE_ASSIMP OFF)
-option(SDFLIB_USE_OPENMP OFF)
-option(SDFLIB_USE_ENOKI OFF)
-findorfetch(
-  USE_SYSTEM_PACKAGE
-  OFF
-  PACKAGE_NAME
-  sdflib
-  LIBRARY_NAME
-  sdflib
-  GIT_REPO
-  https://github.com/UPC-ViRVIG/SdfLib.git
-  GIT_TAG
-  ${MUJOCO_DEP_VERSION_sdflib}
-  TARGETS
-  SdfLib
-  EXCLUDE_FROM_ALL
-)
-target_compile_options(SdfLib PRIVATE ${MUJOCO_MACOS_COMPILE_OPTIONS})
-target_link_options(SdfLib PRIVATE ${MUJOCO_MACOS_LINK_OPTIONS})
+if(CMAKE_POLICY_VERSION_MINIMUM_LOCALLY_DEFINED)
+  unset(CMAKE_POLICY_VERSION_MINIMUM)
+  unset(CMAKE_POLICY_VERSION_MINIMUM_LOCALLY_DEFINED)
+endif()
 
 set(ENABLE_DOUBLE_PRECISION ON)
 set(CCD_HIDE_ALL_SYMBOLS ON)
+
+# Patch changes in https://github.com/danfis/libccd/pull/83.patch
+set(CCD_PATCH_COMMAND
+  git apply --reject --whitespace=fix ${mujoco_SOURCE_DIR}/cmake/ccd-support-emscripten.patch
+)
+
+# update cmake_minimum_required version for compatibility with newer version of cmake
+if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+  set(CMAKE_POLICY_VERSION_MINIMUM ${MUJOCO_CMAKE_MIN_REQ})
+  set(CMAKE_POLICY_VERSION_MINIMUM_LOCALLY_DEFINED ON)
+endif()
 findorfetch(
   USE_SYSTEM_PACKAGE
   OFF
@@ -221,7 +227,12 @@ findorfetch(
   TARGETS
   ccd
   EXCLUDE_FROM_ALL
+  PATCH_COMMAND ${CCD_PATCH_COMMAND}
 )
+if(CMAKE_POLICY_VERSION_MINIMUM_LOCALLY_DEFINED)
+  unset(CMAKE_POLICY_VERSION_MINIMUM)
+  unset(CMAKE_POLICY_VERSION_MINIMUM_LOCALLY_DEFINED)
+endif()
 target_compile_options(ccd PRIVATE ${MUJOCO_MACOS_COMPILE_OPTIONS})
 target_link_options(ccd PRIVATE ${MUJOCO_MACOS_LINK_OPTIONS})
 
@@ -236,7 +247,28 @@ if(WIN32)
   endif()
 endif()
 
-if(MUJOCO_BUILD_TESTS)
+if(DEFINED BUILD_TESTS)
+  set(_OLD_BUILD_TESTS "${BUILD_TESTS}")
+  set(_BUILD_TESTS_WAS_DEFINED TRUE)
+else()
+  set(_BUILD_TESTS_WAS_DEFINED FALSE)
+endif()
+set(BUILD_TESTS OFF)
+fetchpackage(
+  PACKAGE_NAME  miniz
+  GIT_REPO      https://github.com/richgel999/miniz.git
+  GIT_TAG       ${MUJOCO_DEP_VERSION_miniz}
+  TARGETS       miniz
+)
+if(_BUILD_TESTS_WAS_DEFINED)
+  set(BUILD_TESTS "${_OLD_BUILD_TESTS}")
+else()
+  unset(BUILD_TESTS)
+endif()
+unset(_BUILD_TESTS_WAS_DEFINED)
+
+
+if(MUJOCO_BUILD_TESTS OR MUJOCO_BUILD_STUDIO OR MUJOCO_USE_FILAMENT)
   set(ABSL_PROPAGATE_CXX_STD ON)
 
   # This specific version of Abseil does not have the following variable. We need to work with BUILD_TESTING
@@ -267,6 +299,9 @@ if(MUJOCO_BUILD_TESTS)
       ${BUILD_TESTING_OLD}
       CACHE BOOL "Build tests." FORCE
   )
+endif()
+
+if(MUJOCO_BUILD_TESTS)
 
   # Avoid linking errors on Windows by dynamically linking to the C runtime.
   set(gtest_force_shared_crt
@@ -299,9 +334,7 @@ if(MUJOCO_BUILD_TESTS)
         "sed"
         "-i"
         "-e"
-        "s/-std=c++11/-std=c++14/g"
-        "-e"
-        "s/HAVE_CXX_FLAG_STD_CXX11/HAVE_CXX_FLAG_STD_CXX14/g"
+        "s/-Wformat=2/-Wformat/g"
         "${CMAKE_BINARY_DIR}/_deps/benchmark-src/CMakeLists.txt"
     )
   endif()

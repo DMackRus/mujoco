@@ -85,6 +85,7 @@ functionality. This code sample uses the native UI to render various controls, a
 illustration of how the new UI framework is intended to be used. Below is a screen-capture of ``simulate`` in action:
 
 ..  youtube:: P83tKA1iz2Y
+    :aspect: 16:9
     :width: 95%
     :align: center
 
@@ -119,13 +120,19 @@ Windows power plan so that the minimum processor state is 100%.
 `compile <https://github.com/google-deepmind/mujoco/blob/main/sample/compile.cc>`_
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This code sample evokes the built-in parser and compiler. It implements all possible model conversions from (MJCF, URDF,
-MJB) format to (MJCF, MJB, TXT) format. Models saved as MJCF use a canonical subset of our format as described in the
-:doc:`../modeling` chapter, and therefore MJCF-to-MJCF conversion will generally result in a different file.
+This code sample invokes the built-in parser and compiler. It implements all possible model conversions from (MJCF,
+URDF, MJB) format to (MJCF, MJB, TXT) format. Models saved as MJCF use a canonical subset of our format as described in
+the :doc:`../modeling` chapter, and therefore MJCF-to-MJCF conversion will generally result in a different file.
 The TXT format is a human-readable road-map to the model. It cannot be loaded by MuJoCo, but can be a very useful aid
 during model development. It is in one-to-one correspondence with the compiled mjModel. Note also that one can use the
 function :ref:`mj_printData` to create a text file which is in one-to-one correspondence
 with mjData, although this is not done by the code sample.
+
+If the input file is MJCF or URDF and the output file is empty, compilation is performed twice to measure the impact
+of the compiler's :ref:`asset cache<Assetcache>`. A detailed timing breakdown is printed for each compilation, showing
+total time, asset processing time (wall clock), and per-category CPU times for meshes and textures. These timings are
+read from the :ref:`mjtCTimer` fields via :ref:`mjs_getTimer`, which can be read programmatically
+after any call to :ref:`mj_compile`.
 
 .. _saBasic:
 
@@ -206,7 +213,7 @@ data file into a playable movie file:
 Note that the offscreen rendering resolution of the model and ffmpeg's video_size must be identical.
 
 This sample can be compiled in three ways which differ in how the OpenGL context is created: using GLFW with an
-invisible window, using OSMesa, or using EGL. The latter two options are only available on Linux and are envoked by
+invisible window, using OSMesa, or using EGL. The latter two options are only available on Linux and are invoked by
 defining the symbols MJ_OSMESA or MJ_EGL when compiling record.cc. The functions ``initOpenGL`` and ``closeOpenGL``
 create and close the OpenGL context in three different ways depending on which of the above symbols is defined.
 

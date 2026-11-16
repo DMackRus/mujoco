@@ -97,9 +97,9 @@ void mju_writeLog(const char* type, const char* msg) {
     // get time
     time(&rawtime);
 
-#if defined(_POSIX_C_SOURCE) || defined(__APPLE__) || defined(__STDC_VERSION_TIME_H__)
+#if defined(_POSIX_C_SOURCE) || defined(__APPLE__) || defined(__STDC_VERSION_TIME_H__) || defined(__EMSCRIPTEN__)
     localtime_r(&rawtime, &timeinfo);
-#elif _MSC_VER
+#elif defined(_WIN32)
     localtime_s(&timeinfo, &rawtime);
 #elif __STDC_LIB_EXT1__
     localtime_s(&rawtime, &timeinfo);
@@ -114,7 +114,6 @@ void mju_writeLog(const char* type, const char* msg) {
 }
 
 
-
 void mju_error_raw(const char* msg) {
   if (_mjPRIVATE_tls_error_fn) {
     _mjPRIVATE_tls_error_fn(msg);
@@ -123,14 +122,12 @@ void mju_error_raw(const char* msg) {
   } else {
     // write to log and console
     mju_writeLog("ERROR", msg);
-    printf("ERROR: %s\n\nPress Enter to exit ...", msg);
+    printf("ERROR: %s\n\n", msg);
 
-    // pause, exit
-    getchar();
+    // exit
     exit(EXIT_FAILURE);
   }
 }
-
 
 
 void mju_error_v(const char* msg, va_list args) {
@@ -141,7 +138,6 @@ void mju_error_v(const char* msg, va_list args) {
 }
 
 
-
 // write message to logfile and console, pause and exit
 void mju_error(const char* msg, ...) {
   va_list args;
@@ -149,7 +145,6 @@ void mju_error(const char* msg, ...) {
   mju_error_v(msg, args);
   va_end(args);
 }
-
 
 
 // write message to logfile and console
@@ -198,7 +193,6 @@ void mju_warning_s(const char* msg, const char* text) {
 }
 
 
-
 //------------------------------ malloc and free ---------------------------------------------------
 
 // allocate memory; byte-align on 64; pad size to multiple of 64
@@ -213,16 +207,18 @@ void* mju_malloc(size_t size) {
   // default allocator
   else {
     // pad size to multiple of 64
-    if ((size%64)) {
-      size += 64 - (size%64);
+    if (size > 0 && (size % 64)) {
+      size += 64 - (size % 64);
     }
 
     // allocate
-    ptr = mju_alignedMalloc(size, 64);
+    if (size > 0) {
+      ptr = mju_alignedMalloc(size, 64);
+    }
   }
 
   // error if null pointer
-  if (!ptr) {
+  if (!ptr && size > 0) {
     mju_error("Could not allocate memory");
   }
 

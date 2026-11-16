@@ -16,9 +16,9 @@
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjvisualize.h>
 #include <mujoco/mjspec.h>
+#include "engine/engine_init.h"
 #include "engine/engine_io.h"
 #include "user/user_api.h"
-
 
 
 // default model attributes
@@ -42,6 +42,7 @@ void mjs_defaultSpec(mjSpec* spec) {
   spec->compiler.usethread = 1;
   spec->compiler.inertiafromgeom = mjINERTIAFROMGEOM_AUTO;
   spec->compiler.inertiagrouprange[1] = mjNGROUP-1;
+  spec->compiler.saveinertial = 0;
   mj_defaultLROpt(&spec->compiler.LRopt);
 
   // engine data
@@ -64,12 +65,10 @@ void mjs_defaultSpec(mjSpec* spec) {
 }
 
 
-
 // default orientation attributes
 void mjs_defaultOrientation(mjsOrientation* orient) {
   memset(orient, 0, sizeof(mjsOrientation));
 }
-
 
 
 // default body attributes
@@ -86,13 +85,11 @@ void mjs_defaultBody(mjsBody* body) {
 }
 
 
-
 // default frame attributes
 void mjs_defaultFrame(mjsFrame* frame) {
   memset(frame, 0, sizeof(mjsFrame));
   frame->quat[0] = 1;
 }
-
 
 
 // default joint attributes
@@ -106,7 +103,6 @@ void mjs_defaultJoint(mjsJoint* joint) {
   mj_defaultSolRefImp(joint->solref_limit, joint->solimp_limit);
   mj_defaultSolRefImp(joint->solref_friction, joint->solimp_friction);
 }
-
 
 
 // default geom attributes
@@ -151,7 +147,6 @@ void mjs_defaultGeom(mjsGeom* geom) {
 }
 
 
-
 // default site attributes
 void mjs_defaultSite(mjsSite* site) {
   memset(site, 0, sizeof(mjsSite));
@@ -170,7 +165,6 @@ void mjs_defaultSite(mjsSite* site) {
 }
 
 
-
 // default cam attributes
 void mjs_defaultCamera(mjsCamera* cam) {
   memset(cam, 0, sizeof(mjsCamera));
@@ -185,8 +179,8 @@ void mjs_defaultCamera(mjsCamera* cam) {
   cam->fovy = 45;
   cam->ipd = 0.068;
   cam->resolution[0] = cam->resolution[1] = 1;
+  cam->output = mjCAMOUT_RGB;
 }
-
 
 
 // default light attributes
@@ -202,6 +196,8 @@ void mjs_defaultLight(mjsLight* light) {
   // intrinsics
   light->castshadow = 1;
   light->bulbradius = 0.02;
+  light->intensity = 0.0;
+  light->range = 10.0;
   light->active = 1;
   light->attenuation[0] = 1;
   light->cutoff = 45;
@@ -209,7 +205,6 @@ void mjs_defaultLight(mjsLight* light) {
   light->diffuse[0] = light->diffuse[1] = light->diffuse[2] = 0.7;
   light->specular[0] = light->specular[1] = light->specular[2] = 0.3;
 }
-
 
 
 // default flex attributes
@@ -229,7 +224,10 @@ void mjs_defaultFlex(mjsFlex* flex) {
   // set other defaults
   flex->dim = 2;
   flex->radius = 0.005;
-  flex->internal = 1;
+  flex->cellcount[0] = 1;
+  flex->cellcount[1] = 1;
+  flex->cellcount[2] = 1;
+  flex->internal = 0;
   flex->selfcollide = mjFLEXSELF_AUTO;
   flex->activelayers = 1;
   flex->rgba[0] = flex->rgba[1] = flex->rgba[2] = 0.5f;
@@ -238,23 +236,21 @@ void mjs_defaultFlex(mjsFlex* flex) {
 }
 
 
-
 // default mesh attributes
 void mjs_defaultMesh(mjsMesh* mesh) {
   memset(mesh, 0, sizeof(mjsMesh));
   mesh->refquat[0] = 1;
   mesh->scale[0] = mesh->scale[1] = mesh->scale[2] = 1;
   mesh->maxhullvert = -1;
-  mesh->inertia = mjINERTIA_LEGACY;
+  mesh->inertia = mjMESH_INERTIA_LEGACY;
+  mesh->octree_maxdepth = 6;
 }
-
 
 
 // default height field attributes
 void mjs_defaultHField(mjsHField* hfield) {
   memset(hfield, 0, sizeof(mjsHField));
 }
-
 
 
 // default skin attributes
@@ -265,11 +261,11 @@ void mjs_defaultSkin(mjsSkin* skin) {
 }
 
 
-
 // default texture attributes
 void mjs_defaultTexture(mjsTexture* texture) {
   memset(texture, 0, sizeof(mjsTexture));
   texture->type = mjTEXTURE_CUBE;
+  texture->colorspace = mjCOLORSPACE_AUTO;
   texture->rgb1[0] = texture->rgb1[1] = texture->rgb1[2] = 0.8;
   texture->rgb2[0] = texture->rgb2[1] = texture->rgb2[2] = 0.5;
   texture->random = 0.01;
@@ -280,18 +276,16 @@ void mjs_defaultTexture(mjsTexture* texture) {
 }
 
 
-
 // default material attributes
 void mjs_defaultMaterial(mjsMaterial* material) {
   memset(material, 0, sizeof(mjsMaterial));
   material->texrepeat[0] = material->texrepeat[1] = 1;
   material->specular = 0.5;
   material->shininess = 0.5;
-  material->metallic = 1.;
-  material->roughness = 1.0;
+  material->metallic = -1.0;
+  material->roughness = -1.0;
   material->rgba[0] = material->rgba[1] = material->rgba[2] = material->rgba[3] = 1;
 }
-
 
 
 // default pair attributes
@@ -307,7 +301,6 @@ void mjs_defaultPair(mjsPair* pair) {
 }
 
 
-
 // default equality attributes
 void mjs_defaultEquality(mjsEquality* equality) {
   memset(equality, 0, sizeof(mjsEquality));
@@ -317,7 +310,6 @@ void mjs_defaultEquality(mjsEquality* equality) {
   equality->data[1] = 1;
   equality->data[10] = 1;  // torque:force ratio
 }
-
 
 
 // default tendon attributes
@@ -331,7 +323,6 @@ void mjs_defaultTendon(mjsTendon* tendon) {
   tendon->rgba[0] = tendon->rgba[1] = tendon->rgba[2] = 0.5f;
   tendon->rgba[3] = 1.0f;
 }
-
 
 
 // default actuator attributes
@@ -359,7 +350,6 @@ void mjs_defaultActuator(mjsActuator* actuator) {
 }
 
 
-
 // default sensor attributes
 void mjs_defaultSensor(mjsSensor* sensor) {
   memset(sensor, 0, sizeof(mjsSensor));
@@ -370,12 +360,10 @@ void mjs_defaultSensor(mjsSensor* sensor) {
 }
 
 
-
 // Default numeric attributes.
 void mjs_defaultNumeric(mjsNumeric* numeric) {
   memset(numeric, 0, sizeof(mjsNumeric));
 }
-
 
 
 // Default text attributes.
@@ -384,12 +372,10 @@ void mjs_defaultText(mjsText* text) {
 }
 
 
-
 // Default tuple attributes.
 void mjs_defaultTuple(mjsTuple* tuple) {
   memset(tuple, 0, sizeof(mjsTuple));
 }
-
 
 
 // Default keyframe attributes.
@@ -398,9 +384,7 @@ void mjs_defaultKey(mjsKey* key) {
 }
 
 
-
 // default plugin attributes
 void mjs_defaultPlugin(mjsPlugin* plugin) {
   memset(plugin, 0, sizeof(mjsPlugin));
 }
-

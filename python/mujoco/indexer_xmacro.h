@@ -15,7 +15,7 @@
 #ifndef MUJOCO_PYTHON_INDEXER_XMACRO_H_
 #define MUJOCO_PYTHON_INDEXER_XMACRO_H_
 
-#include <mujoco/mjxmacro.h>
+#include <mujoco/mjxmacro.h>  // IWYU pragma: keep
 
 #define MJMODEL_ACTUATOR                                          \
   X( int,     actuator_, trntype,      nu, 1                    ) \
@@ -132,6 +132,7 @@
   X( mjtNum,  jnt_, pos,          njnt, 3               ) \
   X( mjtNum,  jnt_, axis,         njnt, 3               ) \
   X( mjtNum,  jnt_, stiffness,    njnt, 1               ) \
+  X( mjtNum,  jnt_, stiffnesspoly, njnt, mjNPOLY        ) \
   X( mjtNum,  jnt_, range,        njnt, 2               ) \
   X( mjtNum,  jnt_, margin,       njnt, 1               ) \
   X( mjtNum,  jnt_, user,         njnt, MJ_M(nuser_jnt) ) \
@@ -145,6 +146,7 @@
   X( mjtNum,  dof_, frictionloss, nv,   1               ) \
   X( mjtNum,  dof_, armature,     nv,   1               ) \
   X( mjtNum,  dof_, damping,      nv,   1               ) \
+  X( mjtNum,  dof_, dampingpoly,  nv,   mjNPOLY         ) \
   X( mjtNum,  dof_, invweight0,   nv,   1               ) \
   X( mjtNum,  dof_, M0,           nv,   1               )
 
@@ -152,7 +154,7 @@
   X( int,     light_, mode,          nlight,  1 ) \
   X( int,     light_, bodyid,        nlight,  1 ) \
   X( int,     light_, targetbodyid,  nlight,  1 ) \
-  X( mjtByte, light_, directional,   nlight,  1 ) \
+  X( int,     light_, type,          nlight,  1 ) \
   X( mjtByte, light_, castshadow,    nlight,  1 ) \
   X( mjtByte, light_, active,        nlight,  1 ) \
   X( mjtNum,  light_, pos,           nlight,  3 ) \
@@ -253,13 +255,18 @@
   X( mjtNum,  tendon, _range,        ntendon, 2                  ) \
   X( mjtNum,  tendon, _margin,       ntendon, 1                  ) \
   X( mjtNum,  tendon, _stiffness,    ntendon, 1                  ) \
+  X( mjtNum,  tendon, _stiffnesspoly, ntendon, mjNPOLY           ) \
   X( mjtNum,  tendon, _damping,      ntendon, 1                  ) \
+  X( mjtNum,  tendon, _dampingpoly,  ntendon, mjNPOLY            ) \
   X( mjtNum,  tendon, _frictionloss, ntendon, 1                  ) \
   X( mjtNum,  tendon, _lengthspring, ntendon, 1                  ) \
   X( mjtNum,  tendon, _length0,      ntendon, 1                  ) \
   X( mjtNum,  tendon, _invweight0,   ntendon, 1                  ) \
   X( mjtNum,  tendon, _user,         ntendon, MJ_M(nuser_tendon) ) \
-  X( float,   tendon, _rgba,         ntendon, 4                  )
+  X( float,   tendon, _rgba,         ntendon, 4                  ) \
+  X( int,     ten_,   J_rownnz,      ntendon, 1                  ) \
+  X( int,     ten_,   J_rowadr,      ntendon, 1                  ) \
+  X( int,     ten_,   J_colind,      ntendon, MJ_M(nv)           )
 
 #define MJMODEL_TEXTURE                   \
   X( int,     tex_, type,     ntex,     1 ) \
@@ -306,6 +313,28 @@
   XGROUP( MjModelTextureViews,  tex,      ntex,     MJMODEL_TEXTURE  ) \
   XGROUP( MjModelTupleViews,    tuple,    ntuple,   MJMODEL_TUPLE    ) \
   XGROUP( MjModelKeyframeViews, key,      nkey,     MJMODEL_KEYFRAME )
+
+#define MJMODEL_BIND_GROUPS      \
+  XGROUP( mjsActuator, actuator) \
+  XGROUP( mjsBody,     body    ) \
+  XGROUP( mjsCamera,   cam     ) \
+  XGROUP( mjsEquality, eq      ) \
+  XGROUP( mjsExclude,  exclude ) \
+  XGROUP( mjsGeom,     geom    ) \
+  XGROUP( mjsHField,   hfield  ) \
+  XGROUP( mjsJoint,    jnt     ) \
+  XGROUP( mjsLight,    light   ) \
+  XGROUP( mjsMaterial, mat     ) \
+  XGROUP( mjsMesh,     mesh    ) \
+  XGROUP( mjsNumeric,  numeric ) \
+  XGROUP( mjsPair,     pair    ) \
+  XGROUP( mjsSensor,   sensor  ) \
+  XGROUP( mjsSite,     site    ) \
+  XGROUP( mjsSkin,     skin    ) \
+  XGROUP( mjsTendon,   tendon  ) \
+  XGROUP( mjsTexture,  tex     ) \
+  XGROUP( mjsTuple,    tuple   ) \
+  XGROUP( mjsKey,      key     )
 
 #define MJMODEL_VIEW_GROUPS_ALTNAMES        \
   XGROUP( cam, camera,   MJMODEL_CAMERA   ) \
@@ -357,7 +386,6 @@
   X( mjtNum, , xaxis,           njnt, 3           ) \
   X( mjtNum, , cdof,            nv,   6           ) \
   X( mjtNum, , qLDiagInv,       nv,   1           ) \
-  X( mjtNum, , qLDiagSqrtInv,   nv,   1           ) \
   X( mjtNum, , cdof_dot,        nv,   6           ) \
   X( mjtNum, , qfrc_bias,       nv,   1           ) \
   X( mjtNum, , qfrc_passive,    nv,   1           ) \
@@ -381,11 +409,7 @@
 #define MJDATA_TENDON                            \
   X( int, ten_,    wrapadr , ntendon, 1        ) \
   X( int, ten_,    wrapnum , ntendon, 1        ) \
-  X( int, ten_,    J_rownnz, ntendon, 1        ) \
-  X( int, ten_,    J_rowadr, ntendon, 1        ) \
-  X( int, ten_,    J_colind, ntendon, MJ_M(nv) ) \
   X( mjtNum, ten_, length  , ntendon, 1        ) \
-  X( mjtNum, ten_, J       , ntendon, MJ_M(nv) ) \
   X( mjtNum, ten_, velocity, ntendon, 1        )
 
 #define MJDATA_VIEW_GROUPS                                           \
@@ -398,6 +422,17 @@
   XGROUP( MjDataSensorViews,   sensor,   nsensor,  MJDATA_SENSOR   ) \
   XGROUP( MjDataSiteViews,     site,     nsite,    MJDATA_SITE     ) \
   XGROUP( MjDataTendonViews,   tendon,   ntendon,  MJDATA_TENDON   )
+
+#define MJDATA_BIND_GROUPS       \
+  XGROUP( mjsActuator, actuator) \
+  XGROUP( mjsBody,     body    ) \
+  XGROUP( mjsCamera,   cam     ) \
+  XGROUP( mjsGeom,     geom    ) \
+  XGROUP( mjsJoint,    jnt     ) \
+  XGROUP( mjsLight,    light   ) \
+  XGROUP( mjsSensor,   sensor  ) \
+  XGROUP( mjsSite,     site    ) \
+  XGROUP( mjsTendon,   tendon  )
 
 #define MJDATA_VIEW_GROUPS_ALTNAMES       \
   XGROUP( cam,    camera, MJDATA_CAMERA ) \

@@ -18,7 +18,7 @@ MuJoCo defines a large number of types:
   Note that the API does not use these enum types directly. Instead it uses ints, and the documentation/comments state
   that certain ints correspond to certain enum types. This is because we want the API to be compiler-independent, and
   the C standard does not dictate how many bytes must be used to represent an enum type. Nevertheless, for improved
-  readiblity, we recommend using these types when calling API functions which take them as arguments.
+  readability, we recommend using these types when calling API functions which take them as arguments.
 
 - :ref:`C struct types<tyStructure>`. These can be classified as:
 
@@ -28,7 +28,7 @@ MuJoCo defines a large number of types:
     - :ref:`mjOption` (embedded in :ref:`mjModel`).
     - :ref:`mjData`.
 
-  - :ref:`Auxillary struct types<tyAuxStructure>`, also used by the engine.
+  - :ref:`Auxiliary struct types<tyAuxStructure>`, also used by the engine.
   - Structs for collecting :ref:`simulation statistics<tyStatStructure>`.
   - Structs for :ref:`abstract visualization<tyVisStructure>`.
   - Structs used by the :ref:`openGL renderer<tyRenderStructure>`.
@@ -46,7 +46,7 @@ MuJoCo defines a large number of types:
 Primitive types
 ---------------
 
-The two types below are defined in `mjtnum.h <https://github.com/google-deepmind/mujoco/blob/main/include/mujoco/mjtnum.h>`__.
+The three types below are defined in `mjtype.h <https://github.com/google-deepmind/mujoco/blob/main/include/mujoco/mjtype.h>`__.
 
 
 .. _mjtNum:
@@ -63,7 +63,7 @@ double-precision version will always be available. Thus it is safe to write user
 However, our preference is to write code that works with either single or double precision. To this end we provide math
 utility functions that are always defined with the correct floating-point type.
 
-Note that changing ``mjUSESINGLE`` in ``mjtnum.h`` will not change how the library was compiled, and instead will
+Note that changing ``mjUSESINGLE`` in ``mjtype.h`` will not change how the library was compiled, and instead will
 result in numerous link errors. In general, the header files distributed with precompiled MuJoCo should never be
 changed by the user.
 
@@ -84,11 +84,39 @@ changed by the user.
 mjtByte
 ^^^^^^^
 
-Byte type used to represent boolean variables.
+Byte type used to represent small integers and binary data.
 
 .. code-block:: C
 
    typedef unsigned char mjtByte;
+
+
+.. _mjtBool:
+
+mjtBool
+^^^^^^^
+
+Boolean type used to represent true/false values.
+
+.. code-block:: C
+
+   #ifndef __cplusplus
+     typedef _Bool mjtBool;
+   #else
+     typedef bool mjtBool;
+   #endif
+
+
+.. _mjtSize:
+
+mjtSize
+^^^^^^^
+
+Size type used to represent buffer sizes.
+
+.. code-block:: C
+
+   typedef int64_t mjtSize;
 
 
 .. _tyEnums:
@@ -103,7 +131,7 @@ All enum types use the ``mjt`` prefix.
 Model
 ^^^^^
 
-The enums below are defined in `mjmodel.h <https://github.com/google-deepmind/mujoco/blob/main/include/mujoco/mjmodel.h>`__.
+The enums below are defined in `mjtype.h <https://github.com/google-deepmind/mujoco/blob/main/include/mujoco/mjtype.h>`__.
 
 
 .. _mjtDisableBit:
@@ -154,6 +182,16 @@ elements. These values are used in ``m->geom_type`` and ``m->site_type``.
 .. mujoco-include:: mjtGeom
 
 
+.. _mjtProjection:
+
+mjtProjection
+~~~~~~~~~~~~~
+
+Type of camera projection. Used in ``m->cam_projection``.
+
+.. mujoco-include:: mjtProjection
+
+
 .. _mjtCamLight:
 
 mjtCamLight
@@ -163,6 +201,17 @@ Dynamic modes for cameras and lights, specifying how the camera/light position a
 values are used in ``m->cam_mode`` and ``m->light_mode``.
 
 .. mujoco-include:: mjtCamLight
+
+
+.. _mjtLightType:
+
+mjtLightType
+~~~~~~~~~~~~
+
+The type of a light source describing how its position, orientation and other properties will interact with the
+objects in the scene. These values are used in ``m->light_type``.
+
+.. mujoco-include:: mjtLightType
 
 
 .. _mjtTexture:
@@ -184,6 +233,16 @@ Texture roles, specifying how the renderer should interpret the texture.  Note t
 uses RGB textures.  These values are used to store the texture index in the material's array ``m->mat_texid``.
 
 .. mujoco-include:: mjtTextureRole
+
+
+.. _mjtColorSpace:
+
+mjtColorSpace
+~~~~~~~~~~~~~
+
+Type of color space encoding for textures.
+
+.. mujoco-include:: mjtColorSpace
 
 
 .. _mjtIntegrator:
@@ -295,26 +354,6 @@ MuJoCo object types. These are used, for example, in the support functions :ref:
 .. mujoco-include:: mjtObj
 
 
-.. _mjtConstraint:
-
-mjtConstraint
-~~~~~~~~~~~~~
-
-Constraint types. These values are not used in mjModel, but are used in the mjData field ``d->efc_type`` when the list
-of active constraints is constructed at each simulation time step.
-
-.. mujoco-include:: mjtConstraint
-
-.. _mjtConstraintState:
-
-mjtConstraintState
-~~~~~~~~~~~~~~~~~~
-
-These values are used by the solver internally to keep track of the constraint states.
-
-.. mujoco-include:: mjtConstraintState
-
-
 .. _mjtSensor:
 
 mjtSensor
@@ -346,6 +385,36 @@ These are the possible sensor data types, used in ``mjData.sensor_datatype``.
 .. mujoco-include:: mjtDataType
 
 
+.. _mjtConDataField:
+
+mjtConDataField
+~~~~~~~~~~~~~~~
+
+Types of data fields returned by contact sensors.
+
+.. mujoco-include:: mjtConDataField
+
+
+.. _mjtRayDataField:
+
+mjtRayDataField
+~~~~~~~~~~~~~~~
+
+Data fields returned by rangefinder sensors.
+
+.. mujoco-include:: mjtRayDataField
+
+
+.. _mjtCamOutBit:
+
+mjtCamOutBit
+~~~~~~~~~~~~
+
+Camera output type bitflags. These are used in ``m->cam_output``.
+
+.. mujoco-include:: mjtCamOutBit
+
+
 .. _mjtSameFrame:
 
 mjtSameFrame
@@ -357,12 +426,53 @@ last argument to :ref:`mj_local2global`.
 .. mujoco-include:: mjtSameFrame
 
 
+.. _mjtSleepPolicy:
+
+mjtSleepPolicy
+~~~~~~~~~~~~~~
+
+Sleep policy associated with a tree. The compiler automatically chooses between ``NEVER`` and ``ALLOWED``, but the user
+can override this choice. Only the user can set the ``INIT`` policy (initialized as asleep).
+
+.. mujoco-include:: mjtSleepPolicy
+
+
+.. _mjtLRMode:
+
+mjtLRMode
+~~~~~~~~~
+
+Mode for actuator length range computation. Used in ``mjLROpt.mode``.
+
+.. mujoco-include:: mjtLRMode
+
+
+.. _mjtFlexSelf:
+
+mjtFlexSelf
+~~~~~~~~~~~~
+
+Types of flex self-collisions midphase.
+
+.. mujoco-include:: mjtFlexSelf
+
+
+.. _mjtSDFType:
+
+mjtSDFType
+~~~~~~~~~~~
+
+Formulas used to combine SDFs when calling mjc_distance and mjc_gradient.
+
+.. mujoco-include:: mjtSDFType
+
+
 .. _tyDataEnums:
 
 Data
 ^^^^
 
-The enums below are defined in `mjdata.h <https://github.com/google-deepmind/mujoco/blob/main/include/mujoco/mjdata.h>`__.
+The enums below are defined in `mjtype.h <https://github.com/google-deepmind/mujoco/blob/main/include/mujoco/mjtype.h>`__.
 
 
 
@@ -375,6 +485,27 @@ State component elements as integer bitflags and several convenient combinations
 :ref:`mj_getState`, :ref:`mj_setState` and :ref:`mj_stateSize`.
 
 .. mujoco-include:: mjtState
+
+
+.. _mjtConstraint:
+
+mjtConstraint
+~~~~~~~~~~~~~
+
+Constraint types. These values are not used in mjModel, but are used in the mjData field ``d->efc_type`` when the list
+of active constraints is constructed at each simulation time step.
+
+.. mujoco-include:: mjtConstraint
+
+
+.. _mjtConstraintState:
+
+mjtConstraintState
+~~~~~~~~~~~~~~~~~~
+
+These values are used by the solver internally to keep track of the constraint states.
+
+.. mujoco-include:: mjtConstraintState
 
 
 .. _mjtWarning:
@@ -398,6 +529,15 @@ Timer types. The number of timer types is given by ``mjNTIMER`` which is also th
 
 .. mujoco-include:: mjtTimer
 
+
+.. _mjtSleepState:
+
+mjtSleepState
+~~~~~~~~~~~~~
+
+Sleep state of an object.
+
+.. mujoco-include:: mjtSleepState
 
 
 .. _tyVisEnums:
@@ -685,6 +825,36 @@ Type of orientation specifier.
 
 .. mujoco-include:: mjtOrientation
 
+.. _mjtMeshInertia:
+
+mjtMeshInertia
+~~~~~~~~~~~~~~
+
+Type of mesh inertia computation.
+
+.. mujoco-include:: mjtMeshInertia
+
+.. _mjtMeshBuiltin:
+
+mjtMeshBuiltin
+~~~~~~~~~~~~~~
+
+Type of built-in procedural mesh.
+
+.. mujoco-include:: mjtMeshBuiltin
+
+
+.. _mjtCTimer:
+
+mjtCTimer
+~~~~~~~~~
+
+Compiler timing categories, used in :ref:`mjs_getTimer`. Top-level timers (``TOTAL``, ``ASSETS``) measure wall-clock
+time. Asset sub-timers measure CPU time summed across all assets; with multi-threaded compilation their sum can exceed
+the ``ASSETS`` wall-clock time.
+
+.. mujoco-include:: mjtCTimer
+
 
 .. _tyPluginEnums:
 
@@ -712,7 +882,7 @@ Struct types
 ------------
 
 The three central struct types for physics simulation are :ref:`mjModel`, :ref:`mjOption` (embedded in :ref:`mjModel`)
-and :ref:`mjData`. An introductory discussion of these strucures can be found in the :ref:`Overview<ModelAndData>`.
+and :ref:`mjData`. An introductory discussion of these structures can be found in the :ref:`Overview<ModelAndData>`.
 
 
 .. _mjModel:
@@ -752,7 +922,7 @@ modifiable inputs and write their outputs.
 
 .. _tyAuxStructure:
 
-Auxillary
+Auxiliary
 ^^^^^^^^^
 
 These struct types are used in the engine and their names are prefixed with ``mj``. :ref:`mjVisual`
@@ -781,6 +951,15 @@ MJCF element :ref:`statistic <statistic>`. One instance of it is embedded in mjM
 
 .. mujoco-include:: mjStatistic
 
+
+.. _mjPreContact:
+
+mjPreContact
+~~~~~~~~~~~~
+
+This is the data structure holding information about one contact filled out by a narrowphase collision detector.
+
+.. mujoco-include:: mjPreContact
 
 .. _mjContact:
 
@@ -825,6 +1004,24 @@ Options for configuring the automatic :ref:`actuator length-range computation<CL
 
 .. mujoco-include:: mjLROpt
 
+.. _mjCache:
+
+mjCache
+~~~~~~~
+
+Asset cache used by the compiler to avoid repeated slow recompilation. See :ref:`Asset cache<Assetcache>`.
+
+.. mujoco-include:: mjCache
+
+.. _mjtTaskStatus:
+
+mjtTaskStatus
+~~~~~~~~~~~~~
+
+Status values for :ref:`mjTask`.
+
+.. mujoco-include:: mjtTaskStatus
+
 .. _mjTask:
 
 mjTask
@@ -832,6 +1029,7 @@ mjTask
 
 This is a representation of a task to be run asynchronously inside of an :ref:`mjThreadPool` . It is created in the
 :ref:`mju_threadPoolEnqueue` method of the :ref:`mjThreadPool`  and is used to join the task at completion.
+The ``status`` field uses values from :ref:`mjtTaskStatus`.
 
 .. mujoco-include:: mjTask
 
@@ -883,7 +1081,7 @@ mjSolverStat
 
 This is the data structure holding information about one solver iteration. ``mjData.solver`` is a preallocated array
 of mjSolverStat data structures, one for each iteration of the solver, up to a maximum of mjNSOLVER. The actual number
-of solver iterations is given by ``mjData.solver_iter``.
+of solver iterations is given by ``mjData.solver_niter``.
 
 .. mujoco-include:: mjSolverStat
 
@@ -965,17 +1163,6 @@ mjvScene
 This structure contains everything needed to render the 3D scene in OpenGL.
 
 .. mujoco-include:: mjvScene
-
-
-.. _mjvSceneState:
-
-mjvSceneState
-~~~~~~~~~~~~~
-
-This structure contains the portions of :ref:`mjModel` and :ref:`mjData` that are required for
-various ``mjv_*`` functions.
-
-.. mujoco-include:: mjvSceneState
 
 
 .. _mjvFigure:
@@ -1487,6 +1674,16 @@ triggered by the compiler and the engine during various phases of the computatio
 
 .. mujoco-include:: mjpPlugin
 
+.. _mjSDF:
+
+mjSDF
+~~~~~
+
+Data structure used by the :ref:`Signed Distance Functions<Signeddistancefunction>` API for computing distances and
+gradients between SDF geoms.
+
+.. mujoco-include:: mjSDF
+
 .. _mjpResourceProvider:
 
 mjpResourceProvider
@@ -1496,6 +1693,29 @@ This data structure contains the definition of a :ref:`resource provider <exProv
 used for opening and reading resources.
 
 .. mujoco-include:: mjpResourceProvider
+
+.. _mjpDecoder:
+
+mjpDecoder
+~~~~~~~~~~~~~~~~~~~
+
+This data structure defines a decoder. It contains a set of callbacks used for decoding :ref:`mjResource`
+into :ref:`mjSpec`.
+
+.. mujoco-include:: mjpDecoder
+
+.. _mjpEncoder:
+
+mjpEncoder
+~~~~~~~~~~~~~~~~~~~
+
+This data structure defines an encoder. It contains a set of callbacks used for encoding of :ref:`mjSpec` and
+:ref:`mjModel` into :ref:`mjResource`.
+
+.. mujoco-include:: mjpEncoder
+
+
+
 
 .. _tyFunction:
 
@@ -1585,7 +1805,7 @@ mjfCollision
 .. code-block:: C
 
    typedef int (*mjfCollision)(const mjModel* m, const mjData* d,
-                               mjContact* con, int g1, int g2, mjtNum margin);
+                               mjPreContact* con, int g1, int g2, mjtNum margin);
 
 This is the function type of the callbacks in the collision table :ref:`mjCOLLISIONFUNC`.
 
@@ -1625,7 +1845,7 @@ mjfOpenResource
 
    typedef int (*mjfOpenResource)(mjResource* resource);
 
-This callback is for opeing a resource; returns zero on failure.
+This callback is for opening a resource; returns zero on failure.
 
 .. _mjfReadResource:
 
@@ -1673,6 +1893,48 @@ mjfResourceModified
 This callback is for checking if a resource was modified since it was last read.
 Returns positive value if the resource was modified since last open, 0 if resource was not modified,
 and negative value if inconclusive.
+
+.. _mjfDecode:
+
+mjfDecode
+~~~~~~~~~
+
+.. code-block:: C
+
+   typedef mjSpec* (*mjfDecode)(mjResource* resource, const mjVFS* vfs);
+
+
+This callback is given an opened resource, and is responsible for decoding it into a :ref:`mjSpec`.
+Ownership of the resource and the returned spec is responsibility of the caller.
+When decoding fails, the callback should return NULL.
+
+.. _mjfCanDecode:
+
+mjfCanDecode
+~~~~~~~~~~~~
+
+.. code-block:: C
+
+   typedef int (*mjfCanDecode)(const mjResource* resource);
+
+
+This callback is given an opened resource, and is responsible for returning true if the resource can
+be decoded by the :ref:`mjpDecoder<mjpDecoder>`.
+
+.. _mjfEncode:
+
+mjfEncode
+~~~~~~~~~
+
+.. code-block:: C
+
+   typedef int (*mjfEncode)(const mjSpec* s, const mjModel* m, const mjVFS* vfs,
+                            mjResource* resource);
+
+
+This callback populates the :ref:`mjResource<mjResource>` `data` member with bytes representing the
+given spec in the format associated with the owning plugin. This may be called with the associated
+compiled :ref:`mjModel`.
 
 
 .. _tyNotes:
